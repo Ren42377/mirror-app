@@ -1,6 +1,14 @@
 package com.ren42377.mirror.ui.preview
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -9,18 +17,24 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -35,16 +49,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.ui.MirrorViewModel
+import java.util.Locale
 
 @Composable
 fun PhotoPreviewScreen(
@@ -84,70 +102,105 @@ fun PhotoPreviewScreen(
         photoResult.bitmap.asImageBitmap()
     }
 
+    val animatedFlipMultiplier by animateFloatAsState(
+        targetValue = if (isFlippedInPreview) -1f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "photoFlipMultiplier"
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
     ) {
         if (isCompareMode) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Box(
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(top = 76.dp, bottom = 96.dp, start = 14.dp, end = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    Image(
-                        bitmap = imageBitmap,
-                        contentDescription = "Captured View",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.Black,
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                     )
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color.Black.copy(alpha = 0.6f),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
-                    ) {
-                        Text(
-                            text = "Captured View",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Image(
+                            bitmap = imageBitmap,
+                            contentDescription = "Captured View",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(24.dp))
                         )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.9f),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 12.dp)
+                        ) {
+                            Text(
+                                text = "Captured View",
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
                     }
                 }
 
-                HorizontalDivider(color = Color.White.copy(alpha = 0.3f), thickness = 1.dp)
-
-                Box(
+                Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    Image(
-                        bitmap = imageBitmap,
-                        contentDescription = "Flipped View",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                scaleX = -1f
-                            }
+                        .fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.Black,
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                     )
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color.Black.copy(alpha = 0.6f),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
-                    ) {
-                        Text(
-                            text = "Flipped Comparison",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Image(
+                            bitmap = imageBitmap,
+                            contentDescription = "Flipped View",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(24.dp))
+                                .graphicsLayer {
+                                    scaleX = -1f
+                                }
                         )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 12.dp)
+                        ) {
+                            Text(
+                                text = "Flipped Comparison",
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -187,8 +240,7 @@ fun PhotoPreviewScreen(
                         }
                     }
                     .graphicsLayer {
-                        val flipMultiplier = if (isFlippedInPreview) -1f else 1f
-                        scaleX = zoomScale * flipMultiplier
+                        scaleX = zoomScale * animatedFlipMultiplier
                         scaleY = zoomScale
                         translationX = panOffset.x
                         translationY = panOffset.y
@@ -200,14 +252,18 @@ fun PhotoPreviewScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(16.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
                 .align(Alignment.TopCenter),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             FilledTonalIconButton(
                 onClick = handleClose,
-                modifier = Modifier.size(48.dp)
+                modifier = Modifier.size(48.dp),
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                )
             ) {
                 Icon(
                     imageVector = Icons.Default.Close,
@@ -215,67 +271,186 @@ fun PhotoPreviewScreen(
                 )
             }
 
-            if (!isCompareMode) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                tonalElevation = 4.dp
+            ) {
+                val statusText = when {
+                    isCompareMode -> "Split Comparison"
+                    isFlippedInPreview -> "Flipped View"
+                    else -> "Captured View"
+                }
+                val zoomBadge = if (!isCompareMode && zoomScale > 1.05f) {
+                    String.format(Locale.US, " | %.1fx", zoomScale)
+                } else {
+                    ""
+                }
+                Text(
+                    text = "$statusText$zoomBadge",
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier.size(48.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                this@Row.AnimatedVisibility(
+                    visible = !isCompareMode && zoomScale > 1.05f,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    FilledTonalIconButton(
+                        onClick = {
+                            zoomScale = 1f
+                            panOffset = Offset.Zero
+                        },
+                        modifier = Modifier.size(48.dp),
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.92f),
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ZoomOutMap,
+                            contentDescription = "Reset Zoom"
+                        )
+                    }
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            AnimatedVisibility(
+                visible = !isCompareMode && zoomScale <= 1.05f,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color.Black.copy(alpha = 0.55f)
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.78f),
+                    modifier = Modifier.padding(bottom = 10.dp)
                 ) {
                     Text(
-                        text = if (isFlippedInPreview) "Flipped View" else "Captured View",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        text = "Double-tap or pinch to zoom",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                     )
                 }
             }
 
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                tonalElevation = 6.dp,
+                border = BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                )
             ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        isCompareMode = false
-                        isFlippedInPreview = !isFlippedInPreview
-                    },
-                    modifier = Modifier.size(48.dp),
-                    colors = if (isFlippedInPreview && !isCompareMode) {
-                        IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        IconButtonDefaults.filledTonalIconButtonColors()
-                    }
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Flip,
-                        contentDescription = "Flip Photo"
+                    PreviewModePill(
+                        icon = Icons.Default.Photo,
+                        label = "Captured",
+                        selected = !isCompareMode && !isFlippedInPreview,
+                        onClick = {
+                            isCompareMode = false
+                            isFlippedInPreview = false
+                        }
                     )
-                }
 
-                FilledTonalIconButton(
-                    onClick = {
-                        isCompareMode = !isCompareMode
-                        zoomScale = 1f
-                        panOffset = Offset.Zero
-                    },
-                    modifier = Modifier.size(48.dp),
-                    colors = if (isCompareMode) {
-                        IconButtonDefaults.filledIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        IconButtonDefaults.filledTonalIconButtonColors()
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Compare,
-                        contentDescription = "Compare Views"
+                    PreviewModePill(
+                        icon = Icons.Default.Flip,
+                        label = "Flip Photo",
+                        selected = !isCompareMode && isFlippedInPreview,
+                        onClick = {
+                            if (isCompareMode) {
+                                isCompareMode = false
+                                isFlippedInPreview = true
+                            } else {
+                                isFlippedInPreview = !isFlippedInPreview
+                            }
+                        }
+                    )
+
+                    PreviewModePill(
+                        icon = Icons.Default.Compare,
+                        label = "Compare",
+                        selected = isCompareMode,
+                        onClick = {
+                            isCompareMode = !isCompareMode
+                            zoomScale = 1f
+                            panOffset = Offset.Zero
+                        }
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PreviewModePill(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val containerColor by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            Color.Transparent
+        },
+        label = "previewPillContainer"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        label = "previewPillContent"
+    )
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(24.dp),
+        color = containerColor
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                color = contentColor
+            )
         }
     }
 }

@@ -1,10 +1,18 @@
 package com.ren42377.mirror
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,7 +37,10 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) {
             RecordingCacheManager.clearAllRecordings(applicationContext)
         }
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
+        )
         setContent {
             MirrorTheme {
                 Surface(
@@ -64,7 +75,27 @@ private fun MirrorNavHost(viewModel: MirrorViewModel) {
     NavHost(
         navController = navController,
         startDestination = Routes.CAMERA,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        enterTransition = {
+            fadeIn(animationSpec = tween(260, easing = FastOutSlowInEasing)) +
+                scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = tween(260, easing = FastOutSlowInEasing)
+                )
+        },
+        exitTransition = {
+            fadeOut(animationSpec = tween(200, easing = FastOutSlowInEasing))
+        },
+        popEnterTransition = {
+            fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing))
+        },
+        popExitTransition = {
+            fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)) +
+                scaleOut(
+                    targetScale = 0.94f,
+                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                )
+        }
     ) {
         composable(Routes.CAMERA) {
             CameraScreen(
