@@ -68,9 +68,11 @@ fun VideoPreviewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val captureResult by viewModel.captureResult.collectAsStateWithLifecycle()
     val videoResult = captureResult as? CaptureResult.Video
+    var isClosing by remember { mutableStateOf(false) }
 
     LaunchedEffect(videoResult) {
-        if (videoResult == null) {
+        if (videoResult == null && !isClosing) {
+            isClosing = true
             onClose()
         }
     }
@@ -95,9 +97,12 @@ fun VideoPreviewScreen(
     }
 
     val handleClose = {
-        exoPlayer.stop()
-        viewModel.clearCaptureResult()
-        onClose()
+        if (!isClosing) {
+            isClosing = true
+            exoPlayer.stop()
+            viewModel.clearCaptureResult()
+            onClose()
+        }
     }
 
     BackHandler(onBack = handleClose)

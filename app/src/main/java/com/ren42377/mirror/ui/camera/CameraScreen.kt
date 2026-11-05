@@ -20,6 +20,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -665,7 +666,9 @@ private fun buildVideoCaptureUseCase(quality: Quality): VideoCapture<Recorder> {
     val recorder = Recorder.Builder()
         .setQualitySelector(qualitySelector)
         .build()
-    return VideoCapture.withOutput(recorder)
+    return VideoCapture.Builder(recorder)
+        .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
+        .build()
 }
 
 @OptIn(ExperimentalCamera2Interop::class)

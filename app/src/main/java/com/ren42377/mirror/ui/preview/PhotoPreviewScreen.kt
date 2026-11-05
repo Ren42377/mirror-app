@@ -15,7 +15,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,16 +35,21 @@ fun PhotoPreviewScreen(
 ) {
     val captureResult by viewModel.captureResult.collectAsStateWithLifecycle()
     val photoResult = captureResult as? CaptureResult.Photo
+    var isClosing by remember { mutableStateOf(false) }
 
     val handleClose = {
-        viewModel.clearCaptureResult()
-        onClose()
+        if (!isClosing) {
+            isClosing = true
+            viewModel.clearCaptureResult()
+            onClose()
+        }
     }
 
     BackHandler(onBack = handleClose)
 
     LaunchedEffect(photoResult) {
-        if (photoResult == null) {
+        if (photoResult == null && !isClosing) {
+            isClosing = true
             onClose()
         }
     }
