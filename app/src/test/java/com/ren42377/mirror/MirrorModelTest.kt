@@ -2,6 +2,7 @@ package com.ren42377.mirror
 
 import androidx.camera.core.CameraSelector
 import com.ren42377.mirror.model.AppSettings
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorUiState
@@ -122,5 +123,30 @@ class MirrorModelTest {
         )
         assertTrue(supported.effectiveVideoStabilization)
         assertTrue(supported.effectiveOpticalStabilization)
+    }
+
+    @Test
+    fun aspectRatioOptionParsesAndResolvesPortraitRatio() {
+        assertEquals(AspectRatioOption.RATIO_4_3, AspectRatioOption.fromKey("4:3"))
+        assertEquals(AspectRatioOption.RATIO_16_9, AspectRatioOption.fromKey("16:9"))
+        assertEquals(AspectRatioOption.RATIO_1_1, AspectRatioOption.fromKey("1:1"))
+        assertEquals(AspectRatioOption.FULLSCREEN, AspectRatioOption.fromKey("FULL"))
+        assertEquals(AspectRatioOption.RATIO_4_3, AspectRatioOption.fromKey("unknown"))
+
+        assertEquals(0.75f, AspectRatioOption.RATIO_4_3.resolvePortraitRatio(1080, 2400), 0.001f)
+        assertEquals(0.5625f, AspectRatioOption.RATIO_16_9.resolvePortraitRatio(1080, 2400), 0.001f)
+        assertEquals(1.0f, AspectRatioOption.RATIO_1_1.resolvePortraitRatio(1080, 2400), 0.001f)
+        assertEquals(0.45f, AspectRatioOption.FULLSCREEN.resolvePortraitRatio(1080, 2400), 0.001f)
+    }
+
+    @Test
+    fun uiStateReflectsSelectedAspectRatio() {
+        val defaultState = MirrorUiState()
+        assertEquals(AspectRatioOption.RATIO_4_3, defaultState.aspectRatio)
+
+        val fullscreenState = MirrorUiState(
+            settings = AppSettings(aspectRatio = "FULL")
+        )
+        assertEquals(AspectRatioOption.FULLSCREEN, fullscreenState.aspectRatio)
     }
 }

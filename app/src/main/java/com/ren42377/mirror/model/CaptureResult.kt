@@ -11,10 +11,15 @@ data class FaceZoomSample(
 )
 
 sealed interface CaptureResult {
-    data class Photo(val bitmap: Bitmap) : CaptureResult
+    data class Photo(
+        val bitmap: Bitmap,
+        val aspectRatio: AspectRatioOption = AspectRatioOption.RATIO_4_3
+    ) : CaptureResult
+
     data class Video(
         val file: File,
         val mirrored: Boolean,
-        val zoomSamples: List<FaceZoomSample> = emptyList()
+        val zoomSamples: List<FaceZoomSample> = emptyList(),
+        val aspectRatio: AspectRatioOption = AspectRatioOption.RATIO_4_3
     ) : CaptureResult
 }

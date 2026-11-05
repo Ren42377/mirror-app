@@ -3,6 +3,7 @@ package com.ren42377.mirror.model
 import android.util.Size
 
 data class AppSettings(
+    val aspectRatio: String = AspectRatioOption.RATIO_4_3.key,
     val photoResolution: String = "",
     val videoQuality: String = "FHD",
     val videoFrameRate: Int = 30,

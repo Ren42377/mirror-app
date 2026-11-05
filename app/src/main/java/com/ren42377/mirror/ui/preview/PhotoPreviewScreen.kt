@@ -63,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
@@ -117,7 +118,7 @@ fun PhotoPreviewScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .background(Color.Black)
     ) {
         if (isCompareMode) {
             Column(
@@ -213,18 +214,25 @@ fun PhotoPreviewScreen(
             }
         } else {
             val bitmapRatio = (photoResult.bitmap.width.toFloat() /
-                photoResult.bitmap.height.coerceAtLeast(1).toFloat()).coerceIn(0.4f, 2.5f)
-            Box(
-                modifier = Modifier
+                photoResult.bitmap.height.coerceAtLeast(1).toFloat()).coerceIn(0.3f, 2.5f)
+            val containerModifier = if (photoResult.aspectRatio == AspectRatioOption.FULLSCREEN) {
+                Modifier
+                    .fillMaxSize()
+                    .clipToBounds()
+            } else {
+                Modifier
                     .fillMaxWidth()
-                    .aspectRatio(bitmapRatio)
+                    .aspectRatio(photoResult.aspectRatio.portraitRatio ?: bitmapRatio)
                     .align(Alignment.Center)
                     .clipToBounds()
+            }
+            Box(
+                modifier = containerModifier
             ) {
                 Image(
                     bitmap = imageBitmap,
                     contentDescription = "Captured Photo",
-                    contentScale = ContentScale.Fit,
+                    contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -52,6 +53,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -63,16 +66,20 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.ren42377.mirror.R
 import com.ren42377.mirror.camera.FaceZoomTracker
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
 import kotlinx.coroutines.delay
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun VideoPreviewScreen(
     viewModel: MirrorViewModel,
@@ -186,14 +193,11 @@ fun VideoPreviewScreen(
             null,
             false
         ) as PlayerView).apply {
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            outlineProvider = ViewOutlineProvider.BOUNDS
+            clipToOutline = true
             clipChildren = true
             clipToPadding = true
-            findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
-                outlineProvider = ViewOutlineProvider.BOUNDS
-                clipToOutline = true
-                clipChildren = true
-                clipToPadding = true
-            }
         }
     }
 
@@ -218,24 +222,38 @@ fun VideoPreviewScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .background(Color.Black)
     ) {
-        AndroidView(
-            factory = {
-                playerView.apply {
-                    player = exoPlayer
+        val videoContainerModifier = if (videoResult.aspectRatio == AspectRatioOption.FULLSCREEN) {
+            Modifier
+                .fillMaxSize()
+                .clipToBounds()
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(videoResult.aspectRatio.portraitRatio ?: (3f / 4f))
+                .align(Alignment.Center)
+                .clipToBounds()
+        }
+
+        Box(modifier = videoContainerModifier) {
+            AndroidView(
+                factory = {
+                    playerView.apply {
+                        player = exoPlayer
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                update = { view ->
+                    if (view.player !== exoPlayer) {
+                        view.player = exoPlayer
+                    }
+                    val sampleTimeMs = if (isDraggingSlider) sliderPositionMs.toLong() else currentPositionMs
+                    val zoomSample = sampleFaceZoomAt(videoResult.zoomSamples, sampleTimeMs)
+                    applyVideoZoomTransform(view, animatedScaleX, zoomSample)
                 }
-            },
-            modifier = Modifier.fillMaxSize(),
-            update = { view ->
-                if (view.player !== exoPlayer) {
-                    view.player = exoPlayer
-                }
-                val sampleTimeMs = if (isDraggingSlider) sliderPositionMs.toLong() else currentPositionMs
-                val zoomSample = sampleFaceZoomAt(videoResult.zoomSamples, sampleTimeMs)
-                applyVideoZoomTransform(view, animatedScaleX, zoomSample)
-            }
-        )
+            )
+        }
 
         Row(
             modifier = Modifier
@@ -534,14 +552,11 @@ private fun applyVideoZoomTransform(
     flipScaleX: Float,
     sample: FaceZoomSample
 ) {
-    val contentFrame = playerView.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)
-    contentFrame?.let { frame ->
-        if (!frame.clipToOutline) {
-            frame.outlineProvider = ViewOutlineProvider.BOUNDS
-            frame.clipToOutline = true
-            frame.clipChildren = true
-            frame.clipToPadding = true
-        }
+    if (!playerView.clipToOutline) {
+        playerView.outlineProvider = ViewOutlineProvider.BOUNDS
+        playerView.clipToOutline = true
+        playerView.clipChildren = true
+        playerView.clipToPadding = true
     }
     val targetView = playerView.videoSurfaceView ?: return
     playerView.scaleX = 1f
@@ -555,8 +570,10 @@ private fun applyVideoZoomTransform(
 
     val w = targetView.width.toFloat()
     val h = targetView.height.toFloat()
+    val boxW = playerView.width.toFloat().takeIf { it > 0f } ?: w
+    val boxH = playerView.height.toFloat().takeIf { it > 0f } ?: h
     if (w > 0f && h > 0f && activeZoom > 1.001f) {
-        val videoAspect = (w / h).coerceIn(0.4f, 1f)
+        val videoAspect = (w / h).coerceIn(0.3f, 1.2f)
         val sensorAspect = 0.75f
         val mappedNormX = if (videoAspect < sensorAspect) {
             ((sample.normX - 0.5f) * (sensorAspect / videoAspect) + 0.5f).coerceIn(0f, 1f)
@@ -568,10 +585,10 @@ private fun applyVideoZoomTransform(
         } else {
             sample.normY.coerceIn(0f, 1f)
         }
-        val maxTx = (activeZoom - 1f) * w * 0.5f
-        val maxTy = (activeZoom - 1f) * h * 0.5f
-        val desiredTx = (0.5f - mappedNormX) * w * targetView.scaleX
-        val desiredTy = (0.5f - mappedNormY) * h * activeZoom
+        val maxTx = (w * activeZoom - boxW).coerceAtLeast(0f) * 0.5f
+        val maxTy = (h * activeZoom - boxH).coerceAtLeast(0f) * 0.5f
+        val desiredTx = (0.5f - mappedNormX) * boxW * targetView.scaleX
+        val desiredTy = (0.5f - mappedNormY) * boxH * activeZoom
         targetView.translationX = desiredTx.coerceIn(-maxTx, maxTx)
         targetView.translationY = desiredTy.coerceIn(-maxTy, maxTy)
     } else {

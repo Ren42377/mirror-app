@@ -11,10 +11,12 @@ import com.ren42377.mirror.camera.CameraCapabilities
 import com.ren42377.mirror.data.RecordingCacheManager
 import com.ren42377.mirror.data.SettingsRepository
 import com.ren42377.mirror.model.AppSettings
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.model.VideoQualityOption
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,6 +74,7 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                     isFlipped = false,
                     exposureIndex = 0,
                     isExposureSliderVisible = false,
+                    isAspectRatioBarVisible = false,
                     isFaceDetected = false
                 )
             }
@@ -175,12 +178,42 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun toggleAspectRatioBar() {
+        _uiState.update { state ->
+            if (state.isRecording) {
+                state
+            } else {
+                val nextVisible = !state.isAspectRatioBarVisible
+                state.copy(
+                    isAspectRatioBarVisible = nextVisible,
+                    isExposureSliderVisible = if (nextVisible) false else state.isExposureSliderVisible
+                )
+            }
+        }
+    }
+
+    fun selectAspectRatio(option: AspectRatioOption) {
+        _uiState.update { current ->
+            current.copy(
+                settings = current.settings.copy(aspectRatio = option.key),
+                isAspectRatioBarVisible = false
+            )
+        }
+        viewModelScope.launch {
+            settingsRepository.setAspectRatio(option.key)
+        }
+    }
+
     fun toggleExposureSlider() {
         _uiState.update { state ->
             if (!state.hasExposureControl) {
                 state
             } else {
-                state.copy(isExposureSliderVisible = !state.isExposureSliderVisible)
+                val nextVisible = !state.isExposureSliderVisible
+                state.copy(
+                    isExposureSliderVisible = nextVisible,
+                    isAspectRatioBarVisible = if (nextVisible) false else state.isAspectRatioBarVisible
+                )
             }
         }
     }
@@ -190,7 +223,8 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update {
                 it.copy(
                     isSettingsOpen = true,
-                    isExposureSliderVisible = false
+                    isExposureSliderVisible = false,
+                    isAspectRatioBarVisible = false
                 )
             }
         }
@@ -241,6 +275,8 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         cropZoom: Float = 1f,
         cropCenterX: Float = 0.5f,
         cropCenterY: Float = 0.5f,
+        targetAspectRatio: Float? = null,
+        aspectRatioOption: AspectRatioOption = _uiState.value.aspectRatio,
         onComplete: () -> Unit
     ) {
         viewModelScope.launch {
@@ -251,11 +287,15 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                     mirrorHorizontally = mirrorHorizontally,
                     cropZoom = cropZoom,
                     cropCenterX = cropCenterX,
-                    cropCenterY = cropCenterY
+                    cropCenterY = cropCenterY,
+                    targetAspectRatio = targetAspectRatio
                 )
             }
             clearCaptureResult()
-            _captureResult.value = CaptureResult.Photo(transformed)
+            _captureResult.value = CaptureResult.Photo(
+                bitmap = transformed,
+                aspectRatio = aspectRatioOption
+            )
             _uiState.update { it.copy(isCapturingPhoto = false) }
             onComplete()
         }
@@ -266,7 +306,8 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 isRecording = true,
                 recordingSeconds = 0L,
-                isSettingsOpen = false
+                isSettingsOpen = false,
+                isAspectRatioBarVisible = false
             )
         }
     }
@@ -294,13 +335,15 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         file: File,
         mirrored: Boolean,
         zoomSamples: List<FaceZoomSample> = emptyList(),
+        aspectRatio: AspectRatioOption = _uiState.value.aspectRatio,
         onComplete: () -> Unit
     ) {
         clearCaptureResult(keepFile = file)
         _captureResult.value = CaptureResult.Video(
             file = file,
             mirrored = mirrored,
-            zoomSamples = zoomSamples
+            zoomSamples = zoomSamples,
+            aspectRatio = aspectRatio
         )
         _uiState.update {
             it.copy(
@@ -338,7 +381,8 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
             mirrorHorizontally: Boolean,
             cropZoom: Float = 1f,
             cropCenterX: Float = 0.5f,
-            cropCenterY: Float = 0.5f
+            cropCenterY: Float = 0.5f,
+            targetAspectRatio: Float? = null
         ): Bitmap {
             val matrix = Matrix()
             if (rotationDegrees != 0) {
@@ -364,15 +408,48 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
-            if (cropZoom <= 1.01f) {
+
+            val currentRatio = oriented.width.toFloat() / oriented.height.coerceAtLeast(1).toFloat()
+            val desiredRatio = targetAspectRatio?.takeIf { it > 0f } ?: currentRatio
+            val (baseWidth, baseHeight) = if (abs(currentRatio - desiredRatio) <= 0.005f) {
+                oriented.width to oriented.height
+            } else if (currentRatio > desiredRatio) {
+                val croppedW = (oriented.height * desiredRatio).roundToInt().coerceIn(1, oriented.width)
+                croppedW to oriented.height
+            } else {
+                val croppedH = (oriented.width / desiredRatio).roundToInt().coerceIn(1, oriented.height)
+                oriented.width to croppedH
+            }
+            val baseLeft = (oriented.width - baseWidth) / 2
+            val baseTop = (oriented.height - baseHeight) / 2
+
+            val effectiveZoom = cropZoom.coerceAtLeast(1f)
+            val cropWidth = if (effectiveZoom <= 1.01f) {
+                baseWidth
+            } else {
+                (baseWidth / effectiveZoom).roundToInt().coerceIn(1, baseWidth)
+            }
+            val cropHeight = if (effectiveZoom <= 1.01f) {
+                baseHeight
+            } else {
+                (baseHeight / effectiveZoom).roundToInt().coerceIn(1, baseHeight)
+            }
+            val cropLeft = if (effectiveZoom <= 1.01f) {
+                baseLeft
+            } else {
+                val cx = cropCenterX.coerceIn(0f, 1f) * baseWidth
+                baseLeft + (cx - cropWidth * 0.5f).roundToInt().coerceIn(0, baseWidth - cropWidth)
+            }
+            val cropTop = if (effectiveZoom <= 1.01f) {
+                baseTop
+            } else {
+                val cy = cropCenterY.coerceIn(0f, 1f) * baseHeight
+                baseTop + (cy - cropHeight * 0.5f).roundToInt().coerceIn(0, baseHeight - cropHeight)
+            }
+
+            if (cropLeft == 0 && cropTop == 0 && cropWidth == oriented.width && cropHeight == oriented.height) {
                 return oriented
             }
-            val cropWidth = (oriented.width / cropZoom).roundToInt().coerceIn(1, oriented.width)
-            val cropHeight = (oriented.height / cropZoom).roundToInt().coerceIn(1, oriented.height)
-            val cx = cropCenterX.coerceIn(0f, 1f) * oriented.width
-            val cy = cropCenterY.coerceIn(0f, 1f) * oriented.height
-            val cropLeft = (cx - cropWidth * 0.5f).roundToInt().coerceIn(0, oriented.width - cropWidth)
-            val cropTop = (cy - cropHeight * 0.5f).roundToInt().coerceIn(0, oriented.height - cropHeight)
             val cropped = Bitmap.createBitmap(oriented, cropLeft, cropTop, cropWidth, cropHeight)
             if (cropped !== oriented) {
                 oriented.recycle()

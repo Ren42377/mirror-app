@@ -28,6 +28,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -144,6 +145,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -159,6 +161,7 @@ import com.ren42377.mirror.camera.FrameRatePlanner
 import com.ren42377.mirror.camera.queryCameraCapabilities
 import com.ren42377.mirror.camera.sensorPointToDisplayNormalized
 import com.ren42377.mirror.data.RecordingCacheManager
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
@@ -291,6 +294,7 @@ fun CameraScreen(
     var tapFocusOffset by remember { mutableStateOf<Offset?>(null) }
     var tapFocusTimestamp by remember { mutableLongStateOf(0L) }
     var lastAutoMeterTimestamp by remember { mutableLongStateOf(0L) }
+    var rootSize by remember { mutableStateOf(IntSize.Zero) }
 
     var cameraCapabilities by remember { mutableStateOf(CameraCapabilities.EMPTY) }
     val faceZoomTracker = remember { FaceZoomTracker() }
@@ -456,6 +460,20 @@ fun CameraScreen(
 
     LaunchedEffect(uiState.lensFacing) {
         faceZoomTracker.reset()
+    }
+
+    LaunchedEffect(uiState.aspectRatio) {
+        tapFocusOffset = null
+        previewView.post {
+            previewView.requestLayout()
+            applyPreviewTransform(
+                view = previewView,
+                flipScaleX = animatedPreviewScaleX,
+                zoom = faceZoomFactor,
+                previewNormX = facePanNormX,
+                previewNormY = facePanNormY
+            )
+        }
     }
 
     DisposableEffect(previewView) {
@@ -717,13 +735,23 @@ fun CameraScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .onSizeChanged { rootSize = it }
     ) {
-        Box(
-            modifier = Modifier
+        val currentAspectRatio = uiState.aspectRatio
+        val viewfinderModifier = if (currentAspectRatio == AspectRatioOption.FULLSCREEN) {
+            Modifier
+                .fillMaxSize()
+                .clipToBounds()
+        } else {
+            Modifier
                 .fillMaxWidth()
-                .aspectRatio(3f / 4f)
+                .aspectRatio(currentAspectRatio.portraitRatio ?: (3f / 4f))
                 .align(Alignment.Center)
                 .clipToBounds()
+        }
+
+        Box(
+            modifier = viewfinderModifier
         ) {
             AndroidView(
                 factory = { previewContainer },
@@ -907,6 +935,16 @@ fun CameraScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        TopBarAspectRatioButton(
+                            label = uiState.aspectRatio.label,
+                            active = uiState.isAspectRatioBarVisible,
+                            enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
+                            onClick = {
+                                isZoomDialExpanded = false
+                                viewModel.toggleAspectRatioBar()
+                            }
+                        )
+
                         TopBarToggleIcon(
                             icon = Icons.Default.Face,
                             contentDescription = "Face Auto Zoom",
@@ -945,6 +983,22 @@ fun CameraScreen(
                         )
                     }
                 }
+            }
+
+            AnimatedVisibility(
+                visible = uiState.isAspectRatioBarVisible && !uiState.isRecording,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                AspectRatioSelectorBar(
+                    selectedRatio = uiState.aspectRatio,
+                    onSelectRatio = { option ->
+                        viewModel.selectAspectRatio(option)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp)
+                )
             }
 
             AnimatedVisibility(
@@ -1238,6 +1292,12 @@ fun CameraScreen(
                                 val captureZoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
                                 val captureCenterX = if (uiState.isFlipped) 1f - facePanNormX else facePanNormX
                                 val captureCenterY = facePanNormY
+                                val captureAspectOption = uiState.aspectRatio
+                                val captureTargetRatio = if (previewView.width > 0 && previewView.height > 0) {
+                                    previewView.width.toFloat() / previewView.height.toFloat()
+                                } else {
+                                    captureAspectOption.resolvePortraitRatio(rootSize.width, rootSize.height)
+                                }
                                 viewModel.setCapturingPhoto(true)
                                 capture.takePicture(
                                     ContextCompat.getMainExecutor(context),
@@ -1253,6 +1313,8 @@ fun CameraScreen(
                                                     cropZoom = captureZoom,
                                                     cropCenterX = captureCenterX,
                                                     cropCenterY = captureCenterY,
+                                                    targetAspectRatio = captureTargetRatio,
+                                                    aspectRatioOption = captureAspectOption,
                                                     onComplete = onNavigateToPhotoPreview
                                                 )
                                             } catch (_: Exception) {
@@ -1325,18 +1387,53 @@ fun CameraScreen(
                                             val capabilities = cameraCapabilities
                                             val requestedFrameRate = uiState.effectiveFrameRate
                                             val requestedStabilization = uiState.effectiveVideoStabilization
+                                            val recordingAspectOption = uiState.aspectRatio
+                                            val preferredVideoAspect = if (
+                                                recordingAspectOption == AspectRatioOption.RATIO_16_9 ||
+                                                recordingAspectOption == AspectRatioOption.FULLSCREEN
+                                            ) {
+                                                AspectRatio.RATIO_16_9
+                                            } else {
+                                                AspectRatio.RATIO_4_3
+                                            }
                                             val preservedZoomRatio = activeCamera?.cameraInfo?.zoomState?.value?.zoomRatio
-                                            val attempts = listOf(
-                                                RecordingSetup(requestedFrameRate, requestedStabilization),
-                                                RecordingSetup(null, false)
-                                            )
+                                            val attempts = buildList {
+                                                add(
+                                                    RecordingSetup(
+                                                        aspectRatio = preferredVideoAspect,
+                                                        frameRate = requestedFrameRate,
+                                                        stabilization = requestedStabilization
+                                                    )
+                                                )
+                                                add(
+                                                    RecordingSetup(
+                                                        aspectRatio = preferredVideoAspect,
+                                                        frameRate = null,
+                                                        stabilization = false
+                                                    )
+                                                )
+                                                if (preferredVideoAspect != AspectRatio.RATIO_16_9) {
+                                                    add(
+                                                        RecordingSetup(
+                                                            aspectRatio = AspectRatio.RATIO_16_9,
+                                                            frameRate = null,
+                                                            stabilization = false
+                                                        )
+                                                    )
+                                                }
+                                            }
 
                                             var recordingCamera: Camera? = null
                                             var recordingUseCase: VideoCapture<Recorder>? = null
                                             for (setup in attempts) {
-                                                val previewUseCase = buildPreviewUseCase(previewView, faceZoomTracker)
+                                                val previewUseCase = buildPreviewUseCase(
+                                                    previewView = previewView,
+                                                    faceZoomTracker = faceZoomTracker,
+                                                    aspectRatio = setup.aspectRatio
+                                                )
                                                 val videoUseCase = buildVideoCaptureUseCase(
                                                     quality = uiState.effectiveVideoQuality.cameraQuality,
+                                                    aspectRatio = setup.aspectRatio,
                                                     frameRate = setup.frameRate,
                                                     stabilization = setup.stabilization
                                                 )
@@ -1384,6 +1481,7 @@ fun CameraScreen(
                                                     context = context,
                                                     videoCapture = boundVideoCapture,
                                                     mirrorOutput = uiState.isMirroredOnScreen,
+                                                    aspectRatio = recordingAspectOption,
                                                     viewModel = viewModel,
                                                     onNavigateToVideoPreview = onNavigateToVideoPreview,
                                                     onRecordingStarted = {
@@ -1472,6 +1570,7 @@ fun CameraScreen(
 
     if (uiState.isSettingsOpen) {
         SettingsSheet(
+            selectedAspectRatio = uiState.aspectRatio,
             supportedPhotoSizes = uiState.supportedPhotoSizes,
             highResolutionPhotoSizes = uiState.highResolutionPhotoSizes,
             selectedPhotoSize = uiState.effectivePhotoSize,
@@ -1483,6 +1582,7 @@ fun CameraScreen(
             isVideoStabilizationEnabled = uiState.effectiveVideoStabilization,
             isOpticalStabilizationSupported = uiState.isOpticalStabilizationSupported,
             isOpticalStabilizationEnabled = uiState.effectiveOpticalStabilization,
+            onSelectAspectRatio = { viewModel.selectAspectRatio(it) },
             onSelectPhotoSize = { viewModel.selectPhotoResolution(it) },
             onSelectVideoQuality = { viewModel.selectVideoQuality(it) },
             onSelectFrameRate = { viewModel.selectVideoFrameRate(it) },
@@ -1490,6 +1590,125 @@ fun CameraScreen(
             onToggleOpticalStabilization = { viewModel.setOpticalStabilization(it) },
             onDismiss = { viewModel.closeSettingsSheet() }
         )
+    }
+}
+
+@Composable
+private fun TopBarAspectRatioButton(
+    label: String,
+    active: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val containerColor by animateColorAsState(
+        targetValue = if (active) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+        },
+        label = "aspectRatioButtonContainer"
+    )
+    val contentColor by animateColorAsState(
+        targetValue = if (active) {
+            MaterialTheme.colorScheme.onPrimary
+        } else {
+            MaterialTheme.colorScheme.onSecondaryContainer
+        },
+        label = "aspectRatioButtonContent"
+    )
+
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CircleShape,
+        color = if (enabled) containerColor else Color.Transparent,
+        modifier = Modifier
+            .height(40.dp)
+            .defaultMinSize(minWidth = 44.dp)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.padding(horizontal = 10.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = if (enabled) {
+                    contentColor
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                },
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+@Composable
+private fun AspectRatioSelectorBar(
+    selectedRatio: AspectRatioOption,
+    onSelectRatio: (AspectRatioOption) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+        tonalElevation = 6.dp,
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        ),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AspectRatioOption.entries.forEach { option ->
+                val isSelected = option == selectedRatio
+                val chipContainer by animateColorAsState(
+                    targetValue = if (isSelected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color.Transparent
+                    },
+                    label = "aspectRatioChipContainer"
+                )
+                val chipContent by animateColorAsState(
+                    targetValue = if (isSelected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    label = "aspectRatioChipContent"
+                )
+
+                Surface(
+                    onClick = { onSelectRatio(option) },
+                    shape = RoundedCornerShape(18.dp),
+                    color = chipContainer,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = option.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                            color = chipContent,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2024,6 +2243,7 @@ private fun startVideoRecording(
     context: Context,
     videoCapture: VideoCapture<Recorder>,
     mirrorOutput: Boolean,
+    aspectRatio: AspectRatioOption,
     viewModel: MirrorViewModel,
     onNavigateToVideoPreview: () -> Unit,
     onRecordingStarted: () -> Unit,
@@ -2061,6 +2281,7 @@ private fun startVideoRecording(
                         file = outputFile,
                         mirrored = mirrorOutput,
                         zoomSamples = provideZoomSamples(),
+                        aspectRatio = aspectRatio,
                         onComplete = onNavigateToVideoPreview
                     )
                 } else {
@@ -2074,6 +2295,7 @@ private fun startVideoRecording(
 }
 
 private data class RecordingSetup(
+    val aspectRatio: Int,
     val frameRate: Int?,
     val stabilization: Boolean
 )
@@ -2134,10 +2356,16 @@ private fun configureFaceZoomTracker(tracker: FaceZoomTracker, capabilities: Cam
 @OptIn(ExperimentalCamera2Interop::class)
 private fun buildPreviewUseCase(
     previewView: PreviewView,
-    faceZoomTracker: FaceZoomTracker
+    faceZoomTracker: FaceZoomTracker,
+    aspectRatio: Int = AspectRatio.RATIO_4_3
 ): Preview {
+    val strategy = if (aspectRatio == AspectRatio.RATIO_16_9) {
+        AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+    } else {
+        AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+    }
     val resolutionSelector = ResolutionSelector.Builder()
-        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .setAspectRatioStrategy(strategy)
         .build()
     val builder = Preview.Builder()
         .setResolutionSelector(resolutionSelector)
@@ -2203,6 +2431,7 @@ private fun buildImageCaptureUseCase(targetSize: Size?, isHighResolution: Boolea
 
 private fun buildVideoCaptureUseCase(
     quality: Quality,
+    aspectRatio: Int,
     frameRate: Int?,
     stabilization: Boolean
 ): VideoCapture<Recorder> {
@@ -2212,6 +2441,7 @@ private fun buildVideoCaptureUseCase(
     )
     val recorder = Recorder.Builder()
         .setQualitySelector(qualitySelector)
+        .setAspectRatio(aspectRatio)
         .build()
     val builder = VideoCapture.Builder(recorder)
         .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)

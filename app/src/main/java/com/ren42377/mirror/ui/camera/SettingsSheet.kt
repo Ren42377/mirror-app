@@ -17,9 +17,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -52,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ren42377.mirror.camera.curatePhotoSizes
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
 import kotlin.math.roundToInt
@@ -61,6 +65,7 @@ private const val GRID_COLUMNS = 3
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSheet(
+    selectedAspectRatio: AspectRatioOption,
     supportedPhotoSizes: List<Size>,
     highResolutionPhotoSizes: Set<Size>,
     selectedPhotoSize: Size?,
@@ -72,6 +77,7 @@ fun SettingsSheet(
     isVideoStabilizationEnabled: Boolean,
     isOpticalStabilizationSupported: Boolean,
     isOpticalStabilizationEnabled: Boolean,
+    onSelectAspectRatio: (AspectRatioOption) -> Unit,
     onSelectPhotoSize: (Size) -> Unit,
     onSelectVideoQuality: (VideoQualityOption) -> Unit,
     onSelectFrameRate: (Int) -> Unit,
@@ -103,6 +109,7 @@ fun SettingsSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
                 .padding(start = 18.dp, end = 18.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -135,12 +142,55 @@ fun SettingsSheet(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Photo resolution, video quality, and stabilization",
+                        text = "Aspect ratio, photo resolution, and video quality",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    SectionHeader(
+                        icon = Icons.Default.AspectRatio,
+                        title = "Aspect Ratio",
+                        trailingBadge = selectedAspectRatio.label
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AspectRatioOption.entries.forEach { option ->
+                            val isSelected = option == selectedAspectRatio
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { onSelectAspectRatio(option) },
+                                label = {
+                                    Text(
+                                        text = option.label,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
             }
 

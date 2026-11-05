@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.ren42377.mirror.model.AppSettings
+import com.ren42377.mirror.model.AspectRatioOption
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -17,6 +18,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class SettingsRepository(private val context: Context) {
 
     private object Keys {
+        val ASPECT_RATIO = stringPreferencesKey("aspect_ratio")
         val PHOTO_RESOLUTION = stringPreferencesKey("photo_resolution")
         val VIDEO_QUALITY = stringPreferencesKey("video_quality")
         val VIDEO_FRAME_RATE = intPreferencesKey("video_frame_rate")
@@ -26,12 +28,19 @@ class SettingsRepository(private val context: Context) {
 
     val settingsFlow: Flow<AppSettings> = context.dataStore.data.map { preferences ->
         AppSettings(
+            aspectRatio = preferences[Keys.ASPECT_RATIO] ?: AspectRatioOption.RATIO_4_3.key,
             photoResolution = preferences[Keys.PHOTO_RESOLUTION] ?: "",
             videoQuality = preferences[Keys.VIDEO_QUALITY] ?: "FHD",
             videoFrameRate = preferences[Keys.VIDEO_FRAME_RATE] ?: 30,
             videoStabilization = preferences[Keys.VIDEO_STABILIZATION] ?: false,
             opticalStabilization = preferences[Keys.OPTICAL_STABILIZATION] ?: false
         )
+    }
+
+    suspend fun setAspectRatio(aspectRatioKey: String) {
+        context.dataStore.edit { preferences ->
+            preferences[Keys.ASPECT_RATIO] = aspectRatioKey
+        }
     }
 
     suspend fun setPhotoResolution(resolution: String) {

@@ -3,6 +3,7 @@ package com.ren42377.mirror.ui
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import com.ren42377.mirror.model.AppSettings
+import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
 import kotlin.math.abs
@@ -21,6 +22,7 @@ data class MirrorUiState(
     val recordingSeconds: Long = 0L,
     val isCapturingPhoto: Boolean = false,
     val isSettingsOpen: Boolean = false,
+    val isAspectRatioBarVisible: Boolean = false,
     val exposureIndex: Int = 0,
     val minExposureIndex: Int = 0,
     val maxExposureIndex: Int = 0,
@@ -30,6 +32,9 @@ data class MirrorUiState(
     val isFaceTrackingSupported: Boolean = true,
     val isFaceDetected: Boolean = false
 ) {
+    val aspectRatio: AspectRatioOption
+        get() = AspectRatioOption.fromKey(settings.aspectRatio)
+
     val isMirroredOnScreen: Boolean
         get() = if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
             !isFlipped
