@@ -7,21 +7,28 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.net.Uri
 import android.provider.Settings
+import android.util.Range
 import android.util.Size
+import android.view.ScaleGestureDetector
 import android.view.ViewGroup
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -52,6 +59,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
@@ -65,14 +73,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -92,9 +103,12 @@ import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 
+@SuppressLint("ClickableViewAccessibility")
 @Composable
 fun CameraScreen(
     viewModel: MirrorViewModel,
@@ -103,6 +117,7 @@ fun CameraScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     var hasCameraPermission by remember {
@@ -174,6 +189,11 @@ fun CameraScreen(
         return
     }
 
+    var activeCamera by remember { mutableStateOf<Camera?>(null) }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    var activeRecording by remember { mutableStateOf<Recording?>(null) }
+    var rebindTrigger by remember { mutableIntStateOf(0) }
+
     val previewView = remember {
         PreviewView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -181,13 +201,32 @@ fun CameraScreen(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-            scaleType = PreviewView.ScaleType.FILL_CENTER
+            scaleType = PreviewView.ScaleType.FIT_CENTER
         }
     }
 
-    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
-    var videoCapture by remember { mutableStateOf<VideoCapture<Recorder>?>(null) }
-    var activeRecording by remember { mutableStateOf<Recording?>(null) }
+    DisposableEffect(previewView) {
+        val scaleGestureDetector = ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val camera = activeCamera ?: return false
+                    val zoomState = camera.cameraInfo.zoomState.value ?: return false
+                    val newRatio = (zoomState.zoomRatio * detector.scaleFactor)
+                        .coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+                    camera.cameraControl.setZoomRatio(newRatio)
+                    return true
+                }
+            }
+        )
+        previewView.setOnTouchListener { _, event ->
+            scaleGestureDetector.onTouchEvent(event)
+            true
+        }
+        onDispose {
+            previewView.setOnTouchListener(null)
+        }
+    }
 
     LaunchedEffect(uiState.isRecording) {
         if (uiState.isRecording) {
@@ -207,12 +246,25 @@ fun CameraScreen(
         }
     }
 
+    LaunchedEffect(activeCamera, uiState.exposureIndex) {
+        val camera = activeCamera ?: return@LaunchedEffect
+        val exposureState = camera.cameraInfo.exposureState
+        if (exposureState.isExposureCompensationSupported) {
+            val range = exposureState.exposureCompensationRange
+            val clamped = uiState.exposureIndex.coerceIn(range.lower, range.upper)
+            camera.cameraControl.setExposureCompensationIndex(clamped)
+        }
+    }
+
     LaunchedEffect(
         lifecycleOwner,
         uiState.lensFacing,
         uiState.settings.photoResolution,
-        uiState.settings.videoQuality
+        uiState.settings.videoQuality,
+        rebindTrigger
     ) {
+        if (activeRecording != null) return@LaunchedEffect
+
         val cameraProvider = getCameraProvider(context)
         val hasFront = runCatching {
             cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
@@ -252,46 +304,37 @@ fun CameraScreen(
 
         val targetPhotoSize = uiState.settings.parsePhotoSize()
             ?.takeIf { photoSizes.contains(it) }
-            ?: photoSizes.firstOrNull()
+            ?: selectDefaultBinnedPhotoSize(photoSizes)
 
-        val targetVideoQualityOption = VideoQualityOption.fromKey(uiState.settings.videoQuality)
-            .takeIf { videoQualities.contains(it) }
-            ?: videoQualities.firstOrNull()
-            ?: VideoQualityOption.FHD
-
-        val previewUseCase = Preview.Builder().build().also {
-            it.surfaceProvider = previewView.surfaceProvider
-        }
-
+        val previewUseCase = buildPreviewUseCase(previewView)
         val configuredImageCapture = buildImageCaptureUseCase(targetPhotoSize)
-        val configuredVideoCapture = buildVideoCaptureUseCase(targetVideoQualityOption.cameraQuality)
 
         try {
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
+            val camera = cameraProvider.bindToLifecycle(
                 lifecycleOwner,
                 cameraSelector,
                 previewUseCase,
-                configuredImageCapture,
-                configuredVideoCapture
+                configuredImageCapture
             )
+            activeCamera = camera
             imageCapture = configuredImageCapture
-            videoCapture = configuredVideoCapture
+            configureCameraZoomAndExposure(camera, viewModel, uiState.exposureIndex)
         } catch (_: Exception) {
             runCatching {
                 val fallbackImageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
                     previewUseCase,
-                    fallbackImageCapture,
-                    configuredVideoCapture
+                    fallbackImageCapture
                 )
+                activeCamera = camera
                 imageCapture = fallbackImageCapture
-                videoCapture = configuredVideoCapture
+                configureCameraZoomAndExposure(camera, viewModel, uiState.exposureIndex)
             }
         }
     }
@@ -309,60 +352,130 @@ fun CameraScreen(
             }
         )
 
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp)
-                .align(Alignment.TopCenter),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .align(Alignment.TopCenter)
         ) {
-            if (uiState.isRecording) {
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color.Black.copy(alpha = 0.65f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (uiState.isRecording) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color.Black.copy(alpha = 0.65f)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .background(Color.Red, CircleShape)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(Color.Red, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = formatDuration(uiState.recordingSeconds),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color.Black.copy(alpha = 0.5f)
+                    ) {
                         Text(
-                            text = formatDuration(uiState.recordingSeconds),
+                            text = if (uiState.isMirroredOnScreen) "Mirror View" else "True View",
                             color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
                 }
-            } else {
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color.Black.copy(alpha = 0.5f)
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (uiState.isMirroredOnScreen) "Mirror View" else "True View",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
+                    if (uiState.hasExposureControl) {
+                        FilledTonalIconButton(
+                            onClick = { viewModel.toggleExposureSlider() },
+                            enabled = !uiState.isCapturingPhoto,
+                            colors = if (uiState.isExposureSliderVisible || uiState.exposureIndex != 0) {
+                                IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                IconButtonDefaults.filledTonalIconButtonColors()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Brightness6,
+                                contentDescription = "Brightness"
+                            )
+                        }
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = { viewModel.openSettingsSheet() },
+                        enabled = !uiState.isRecording && !uiState.isCapturingPhoto
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings"
+                        )
+                    }
                 }
             }
 
-            FilledTonalIconButton(
-                onClick = { viewModel.openSettingsSheet() },
-                enabled = !uiState.isRecording && !uiState.isCapturingPhoto
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = "Settings"
-                )
+            if (uiState.isExposureSliderVisible && uiState.hasExposureControl) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Brightness6,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Slider(
+                            value = uiState.exposureIndex.toFloat(),
+                            onValueChange = { value ->
+                                viewModel.setExposureIndex(value.roundToInt())
+                            },
+                            valueRange = uiState.minExposureIndex.toFloat()..uiState.maxExposureIndex.toFloat(),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        val sign = if (uiState.exposureIndex > 0) "+" else ""
+                        Text(
+                            text = "$sign${uiState.exposureIndex}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.width(32.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+                }
             }
         }
 
@@ -472,20 +585,51 @@ fun CameraScreen(
                             activeRecording?.stop()
                             activeRecording = null
                         } else {
-                            val currentVideoCapture = videoCapture ?: return@FilledIconButton
-                            startVideoRecording(
-                                context = context,
-                                videoCapture = currentVideoCapture,
-                                mirrorOutput = uiState.isMirroredOnScreen,
-                                viewModel = viewModel,
-                                onNavigateToVideoPreview = onNavigateToVideoPreview,
-                                onRecordingCreated = { recording ->
-                                    activeRecording = recording
-                                },
-                                onRecordingFinished = {
+                            coroutineScope.launch {
+                                val cameraProvider = getCameraProvider(context)
+                                val cameraSelector = CameraSelector.Builder()
+                                    .requireLensFacing(uiState.lensFacing)
+                                    .build()
+                                val previewUseCase = buildPreviewUseCase(previewView)
+                                val configuredVideoCapture = buildVideoCaptureUseCase(
+                                    uiState.effectiveVideoQuality.cameraQuality
+                                )
+                                val currentZoomRatio = activeCamera?.cameraInfo?.zoomState?.value?.zoomRatio
+                                try {
+                                    cameraProvider.unbindAll()
+                                    val camera = cameraProvider.bindToLifecycle(
+                                        lifecycleOwner,
+                                        cameraSelector,
+                                        previewUseCase,
+                                        configuredVideoCapture
+                                    )
+                                    activeCamera = camera
+                                    configureCameraZoomAndExposure(
+                                        camera = camera,
+                                        viewModel = viewModel,
+                                        targetExposureIndex = uiState.exposureIndex,
+                                        preserveZoomRatio = currentZoomRatio
+                                    )
+                                    startVideoRecording(
+                                        context = context,
+                                        videoCapture = configuredVideoCapture,
+                                        mirrorOutput = uiState.isMirroredOnScreen,
+                                        viewModel = viewModel,
+                                        onNavigateToVideoPreview = onNavigateToVideoPreview,
+                                        onRecordingCreated = { recording ->
+                                            activeRecording = recording
+                                        },
+                                        onRecordingFinished = {
+                                            activeRecording = null
+                                            rebindTrigger += 1
+                                        }
+                                    )
+                                } catch (_: Exception) {
                                     activeRecording = null
+                                    viewModel.onRecordingStopped()
+                                    rebindTrigger += 1
                                 }
-                            )
+                            }
                         }
                     },
                     enabled = !uiState.isCapturingPhoto,
@@ -639,23 +783,35 @@ private fun startVideoRecording(
     onRecordingCreated(recording)
 }
 
+private fun buildPreviewUseCase(previewView: PreviewView): Preview {
+    val resolutionSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .build()
+    return Preview.Builder()
+        .setResolutionSelector(resolutionSelector)
+        .build()
+        .also {
+            it.surfaceProvider = previewView.surfaceProvider
+        }
+}
+
 private fun buildImageCaptureUseCase(targetSize: Size?): ImageCapture {
-    val builder = ImageCapture.Builder()
-        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+    val selectorBuilder = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
 
     if (targetSize != null) {
-        val resolutionSelector = ResolutionSelector.Builder()
-            .setResolutionStrategy(
-                ResolutionStrategy(
-                    targetSize,
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
-                )
+        selectorBuilder.setResolutionStrategy(
+            ResolutionStrategy(
+                targetSize,
+                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
             )
-            .build()
-        builder.setResolutionSelector(resolutionSelector)
+        )
     }
 
-    return builder.build()
+    return ImageCapture.Builder()
+        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+        .setResolutionSelector(selectorBuilder.build())
+        .build()
 }
 
 private fun buildVideoCaptureUseCase(quality: Quality): VideoCapture<Recorder> {
@@ -669,6 +825,89 @@ private fun buildVideoCaptureUseCase(quality: Quality): VideoCapture<Recorder> {
     return VideoCapture.Builder(recorder)
         .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
         .build()
+}
+
+@OptIn(ExperimentalCamera2Interop::class)
+private fun configureCameraZoomAndExposure(
+    camera: Camera,
+    viewModel: MirrorViewModel,
+    targetExposureIndex: Int,
+    preserveZoomRatio: Float? = null
+) {
+    val zoomState = camera.cameraInfo.zoomState.value
+    if (preserveZoomRatio != null && zoomState != null) {
+        camera.cameraControl.setZoomRatio(
+            preserveZoomRatio.coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+        )
+    } else if (zoomState != null) {
+        camera.cameraControl.setZoomRatio(zoomState.minZoomRatio)
+    } else {
+        camera.cameraControl.setLinearZoom(0f)
+    }
+
+    val exposureState = camera.cameraInfo.exposureState
+    if (exposureState.isExposureCompensationSupported) {
+        val range = exposureState.exposureCompensationRange
+        val appliedIndex = targetExposureIndex.coerceIn(range.lower, range.upper)
+        viewModel.updateExposureRange(
+            min = range.lower,
+            max = range.upper,
+            current = appliedIndex
+        )
+        camera.cameraControl.setExposureCompensationIndex(appliedIndex)
+    } else {
+        viewModel.updateExposureRange(min = 0, max = 0, current = 0)
+    }
+
+    runCatching {
+        val camera2Info = Camera2CameraInfo.from(camera.cameraInfo)
+        val fpsRanges = camera2Info.getCameraCharacteristic(
+            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
+        )
+        val bestLowLightRange = selectBestAdaptiveFpsRange(fpsRanges)
+        if (bestLowLightRange != null) {
+            val options = CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    bestLowLightRange
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON
+                )
+                .build()
+            Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
+        }
+    }
+}
+
+private fun selectBestAdaptiveFpsRange(ranges: Array<Range<Int>>?): Range<Int>? {
+    if (ranges.isNullOrEmpty()) return null
+    val candidates30 = ranges.filter { it.upper == 30 }
+    if (candidates30.isNotEmpty()) {
+        return candidates30.minByOrNull { it.lower }
+    }
+    val candidatesAtLeast24 = ranges.filter { it.upper >= 24 }
+    if (candidatesAtLeast24.isNotEmpty()) {
+        return candidatesAtLeast24.minWithOrNull(compareBy<Range<Int>> { it.lower }.thenBy { it.upper })
+    }
+    return ranges.minByOrNull { it.lower }
+}
+
+private fun selectDefaultBinnedPhotoSize(photoSizes: List<Size>): Size? {
+    if (photoSizes.isEmpty()) return null
+    val preferredFourByThree = photoSizes.firstOrNull { size ->
+        val area = size.width.toLong() * size.height.toLong()
+        val ratio = size.width.toDouble() / size.height.toDouble()
+        val isFourByThree = kotlin.math.abs(ratio - (4.0 / 3.0)) < 0.06 ||
+            kotlin.math.abs(ratio - (3.0 / 4.0)) < 0.06
+        isFourByThree && area <= 13_000_000L
+    }
+    val preferredBinned = photoSizes.firstOrNull { size ->
+        val area = size.width.toLong() * size.height.toLong()
+        area <= 13_000_000L
+    }
+    return preferredFourByThree ?: preferredBinned ?: photoSizes.first()
 }
 
 @OptIn(ExperimentalCamera2Interop::class)

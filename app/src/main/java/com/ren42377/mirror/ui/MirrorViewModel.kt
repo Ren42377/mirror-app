@@ -64,7 +64,9 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 current.copy(
                     lensFacing = nextLens,
-                    isFlipped = false
+                    isFlipped = false,
+                    exposureIndex = 0,
+                    isExposureSliderVisible = false
                 )
             }
         }
@@ -101,9 +103,48 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun updateExposureRange(min: Int, max: Int, current: Int) {
+        _uiState.update { state ->
+            val safeMin = min.coerceAtMost(max)
+            val safeMax = max.coerceAtLeast(min)
+            state.copy(
+                minExposureIndex = safeMin,
+                maxExposureIndex = safeMax,
+                exposureIndex = current.coerceIn(safeMin, safeMax)
+            )
+        }
+    }
+
+    fun setExposureIndex(index: Int) {
+        _uiState.update { state ->
+            if (!state.hasExposureControl) {
+                state
+            } else {
+                state.copy(
+                    exposureIndex = index.coerceIn(state.minExposureIndex, state.maxExposureIndex)
+                )
+            }
+        }
+    }
+
+    fun toggleExposureSlider() {
+        _uiState.update { state ->
+            if (!state.hasExposureControl) {
+                state
+            } else {
+                state.copy(isExposureSliderVisible = !state.isExposureSliderVisible)
+            }
+        }
+    }
+
     fun openSettingsSheet() {
         if (!_uiState.value.isRecording) {
-            _uiState.update { it.copy(isSettingsOpen = true) }
+            _uiState.update {
+                it.copy(
+                    isSettingsOpen = true,
+                    isExposureSliderVisible = false
+                )
+            }
         }
     }
 

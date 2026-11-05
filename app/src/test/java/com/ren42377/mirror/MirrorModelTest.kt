@@ -62,4 +62,13 @@ class MirrorModelTest {
         val settings = AppSettings(photoResolution = "")
         assertNull(settings.parsePhotoSize())
     }
+
+    @Test
+    fun exposureControlEnabledWhenRangeIsValid() {
+        val disabledState = MirrorUiState(minExposureIndex = 0, maxExposureIndex = 0)
+        assertFalse(disabledState.hasExposureControl)
+
+        val enabledState = MirrorUiState(minExposureIndex = -12, maxExposureIndex = 12)
+        assertTrue(enabledState.hasExposureControl)
+    }
 }
