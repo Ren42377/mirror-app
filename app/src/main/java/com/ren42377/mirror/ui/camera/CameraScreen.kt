@@ -20,7 +20,9 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -55,6 +57,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -100,6 +103,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -121,13 +125,13 @@ import com.ren42377.mirror.camera.FrameRatePlanner
 import com.ren42377.mirror.camera.queryCameraCapabilities
 import com.ren42377.mirror.camera.sensorPointToDisplayNormalized
 import com.ren42377.mirror.data.RecordingCacheManager
+import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -251,15 +255,31 @@ fun CameraScreen(
     var faceZoomFactor by remember { mutableFloatStateOf(1f) }
     var facePanNormX by remember { mutableFloatStateOf(0.5f) }
     var facePanNormY by remember { mutableFloatStateOf(0.5f) }
+    val recordingZoomSamples = remember { mutableListOf<FaceZoomSample>() }
+    var recordingStartElapsedMs by remember { mutableLongStateOf(0L) }
 
     val previewView = remember {
         PreviewView(context).apply {
-            layoutParams = ViewGroup.LayoutParams(
+            layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-            scaleType = PreviewView.ScaleType.FIT_CENTER
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
+
+    val previewContainer = remember(previewView) {
+        FrameLayout(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            outlineProvider = ViewOutlineProvider.BOUNDS
+            clipToOutline = true
+            clipChildren = true
+            clipToPadding = true
+            addView(previewView)
         }
     }
 
@@ -429,6 +449,38 @@ fun CameraScreen(
         }
     }
 
+    LaunchedEffect(uiState.isRecording) {
+        if (uiState.isRecording) {
+            val startMs = if (recordingStartElapsedMs > 0L) {
+                recordingStartElapsedMs
+            } else {
+                SystemClock.elapsedRealtime().also { recordingStartElapsedMs = it }
+            }
+            while (true) {
+                val elapsedMs = (SystemClock.elapsedRealtime() - startMs).coerceAtLeast(0L)
+                val isFront = uiState.lensFacing == CameraSelector.LENS_FACING_FRONT
+                val unmirroredX = if (uiState.isFaceAutoZoomEnabled) {
+                    if (isFront) 1f - facePanNormX else facePanNormX
+                } else {
+                    0.5f
+                }
+                val unmirroredY = if (uiState.isFaceAutoZoomEnabled) facePanNormY else 0.5f
+                val zoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
+                synchronized(recordingZoomSamples) {
+                    recordingZoomSamples.add(
+                        FaceZoomSample(
+                            timeMs = elapsedMs,
+                            zoom = zoom,
+                            normX = unmirroredX,
+                            normY = unmirroredY
+                        )
+                    )
+                }
+                delay(FACE_ZOOM_STEP_MS)
+            }
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             activeRecording?.stop()
@@ -572,35 +624,43 @@ fun CameraScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.fillMaxSize(),
-            update = { view ->
-                applyPreviewTransform(
-                    view = view,
-                    isFlipped = uiState.isFlipped,
-                    zoom = faceZoomFactor,
-                    previewNormX = facePanNormX,
-                    previewNormY = facePanNormY
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(3f / 4f)
+                .align(Alignment.Center)
+                .clipToBounds()
+        ) {
+            AndroidView(
+                factory = { previewContainer },
+                modifier = Modifier.fillMaxSize(),
+                update = {
+                    applyPreviewTransform(
+                        view = previewView,
+                        isFlipped = uiState.isFlipped,
+                        zoom = faceZoomFactor,
+                        previewNormX = facePanNormX,
+                        previewNormY = facePanNormY
+                    )
+                }
+            )
+
+            val currentTapFocus = tapFocusOffset
+            if (currentTapFocus != null) {
+                val ringSizeDp = 64.dp
+                val halfRingPx = with(density) { (ringSizeDp / 2).roundToPx() }
+                Box(
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                x = currentTapFocus.x.roundToInt() - halfRingPx,
+                                y = currentTapFocus.y.roundToInt() - halfRingPx
+                            )
+                        }
+                        .size(ringSizeDp)
+                        .border(2.dp, Color(0xFFFFD54F), CircleShape)
                 )
             }
-        )
-
-        val currentTapFocus = tapFocusOffset
-        if (currentTapFocus != null) {
-            val ringSizeDp = 64.dp
-            val halfRingPx = with(density) { (ringSizeDp / 2).roundToPx() }
-            Box(
-                modifier = Modifier
-                    .offset {
-                        IntOffset(
-                            x = currentTapFocus.x.roundToInt() - halfRingPx,
-                            y = currentTapFocus.y.roundToInt() - halfRingPx
-                        )
-                    }
-                    .size(ringSizeDp)
-                    .border(2.dp, Color(0xFFFFD54F), CircleShape)
-            )
         }
 
         if (uiState.isRingLightEnabled) {
@@ -976,6 +1036,33 @@ fun CameraScreen(
                                         mirrorOutput = uiState.isMirroredOnScreen,
                                         viewModel = viewModel,
                                         onNavigateToVideoPreview = onNavigateToVideoPreview,
+                                        onRecordingStarted = {
+                                            recordingStartElapsedMs = SystemClock.elapsedRealtime()
+                                            val isFront = uiState.lensFacing == CameraSelector.LENS_FACING_FRONT
+                                            val initialX = if (uiState.isFaceAutoZoomEnabled) {
+                                                if (isFront) 1f - facePanNormX else facePanNormX
+                                            } else {
+                                                0.5f
+                                            }
+                                            val initialY = if (uiState.isFaceAutoZoomEnabled) facePanNormY else 0.5f
+                                            val initialZoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
+                                            synchronized(recordingZoomSamples) {
+                                                recordingZoomSamples.clear()
+                                                recordingZoomSamples.add(
+                                                    FaceZoomSample(
+                                                        timeMs = 0L,
+                                                        zoom = initialZoom,
+                                                        normX = initialX,
+                                                        normY = initialY
+                                                    )
+                                                )
+                                            }
+                                        },
+                                        provideZoomSamples = {
+                                            synchronized(recordingZoomSamples) {
+                                                recordingZoomSamples.toList()
+                                            }
+                                        },
                                         onRecordingCreated = { recording ->
                                             activeRecording = recording
                                         },
@@ -1110,6 +1197,8 @@ private fun startVideoRecording(
     mirrorOutput: Boolean,
     viewModel: MirrorViewModel,
     onNavigateToVideoPreview: () -> Unit,
+    onRecordingStarted: () -> Unit,
+    provideZoomSamples: () -> List<FaceZoomSample>,
     onRecordingCreated: (Recording) -> Unit,
     onRecordingFinished: () -> Unit
 ) {
@@ -1133,6 +1222,7 @@ private fun startVideoRecording(
     val recording = pendingRecording.start(ContextCompat.getMainExecutor(context)) { event ->
         when (event) {
             is VideoRecordEvent.Start -> {
+                onRecordingStarted()
                 viewModel.onRecordingStarted()
             }
             is VideoRecordEvent.Finalize -> {
@@ -1141,6 +1231,7 @@ private fun startVideoRecording(
                     viewModel.onVideoCaptured(
                         file = outputFile,
                         mirrored = mirrorOutput,
+                        zoomSamples = provideZoomSamples(),
                         onComplete = onNavigateToVideoPreview
                     )
                 } else {
@@ -1178,12 +1269,10 @@ private fun applyPreviewTransform(
     val viewWidth = view.width.toFloat()
     val viewHeight = view.height.toFloat()
     if (viewWidth > 0f && viewHeight > 0f && activeZoom > 1.001f) {
-        val contentWidth = min(viewWidth, viewHeight * 0.75f)
-        val contentHeight = min(viewHeight, viewWidth * (4f / 3f))
-        val maxTx = (activeZoom - 1f) * contentWidth * 0.5f
-        val maxTy = (activeZoom - 1f) * contentHeight * 0.5f
-        val desiredTx = (0.5f - previewNormX) * contentWidth * view.scaleX
-        val desiredTy = (0.5f - previewNormY) * contentHeight * activeZoom
+        val maxTx = (activeZoom - 1f) * viewWidth * 0.5f
+        val maxTy = (activeZoom - 1f) * viewHeight * 0.5f
+        val desiredTx = (0.5f - previewNormX) * viewWidth * view.scaleX
+        val desiredTy = (0.5f - previewNormY) * viewHeight * activeZoom
         view.translationX = desiredTx.coerceIn(-maxTx, maxTx)
         view.translationY = desiredTy.coerceIn(-maxTy, maxTy)
     } else {

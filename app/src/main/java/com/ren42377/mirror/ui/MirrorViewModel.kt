@@ -12,6 +12,7 @@ import com.ren42377.mirror.data.RecordingCacheManager
 import com.ren42377.mirror.data.SettingsRepository
 import com.ren42377.mirror.model.AppSettings
 import com.ren42377.mirror.model.CaptureResult
+import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.model.VideoQualityOption
 import java.io.File
 import kotlin.math.roundToInt
@@ -289,9 +290,18 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun onVideoCaptured(file: File, mirrored: Boolean, onComplete: () -> Unit) {
+    fun onVideoCaptured(
+        file: File,
+        mirrored: Boolean,
+        zoomSamples: List<FaceZoomSample> = emptyList(),
+        onComplete: () -> Unit
+    ) {
         clearCaptureResult(keepFile = file)
-        _captureResult.value = CaptureResult.Video(file = file, mirrored = mirrored)
+        _captureResult.value = CaptureResult.Video(
+            file = file,
+            mirrored = mirrored,
+            zoomSamples = zoomSamples
+        )
         _uiState.update {
             it.copy(
                 isRecording = false,

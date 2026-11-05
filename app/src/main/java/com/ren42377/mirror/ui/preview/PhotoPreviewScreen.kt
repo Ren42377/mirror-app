@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -35,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -152,48 +154,58 @@ fun PhotoPreviewScreen(
                 }
             }
         } else {
-            Image(
-                bitmap = imageBitmap,
-                contentDescription = "Captured Photo",
-                contentScale = ContentScale.Fit,
+            val bitmapRatio = (photoResult.bitmap.width.toFloat() /
+                photoResult.bitmap.height.coerceAtLeast(1).toFloat()).coerceIn(0.4f, 2.5f)
+            Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                if (zoomScale > 1.05f) {
-                                    zoomScale = 1f
+                    .fillMaxWidth()
+                    .aspectRatio(bitmapRatio)
+                    .align(Alignment.Center)
+                    .clipToBounds()
+            ) {
+                Image(
+                    bitmap = imageBitmap,
+                    contentDescription = "Captured Photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (zoomScale > 1.05f) {
+                                        zoomScale = 1f
+                                        panOffset = Offset.Zero
+                                    } else {
+                                        zoomScale = 2.2f
+                                    }
+                                }
+                            )
+                        }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                val newScale = (zoomScale * zoom).coerceIn(1f, 4f)
+                                zoomScale = newScale
+                                if (newScale <= 1.01f) {
                                     panOffset = Offset.Zero
                                 } else {
-                                    zoomScale = 2.2f
+                                    val maxX = (size.width * (newScale - 1f)) / 2f
+                                    val maxY = (size.height * (newScale - 1f)) / 2f
+                                    panOffset = Offset(
+                                        x = (panOffset.x + pan.x).coerceIn(-maxX, maxX),
+                                        y = (panOffset.y + pan.y).coerceIn(-maxY, maxY)
+                                    )
                                 }
                             }
-                        )
-                    }
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            val newScale = (zoomScale * zoom).coerceIn(1f, 4f)
-                            zoomScale = newScale
-                            if (newScale <= 1.01f) {
-                                panOffset = Offset.Zero
-                            } else {
-                                val maxX = (size.width * (newScale - 1f)) / 2f
-                                val maxY = (size.height * (newScale - 1f)) / 2f
-                                panOffset = Offset(
-                                    x = (panOffset.x + pan.x).coerceIn(-maxX, maxX),
-                                    y = (panOffset.y + pan.y).coerceIn(-maxY, maxY)
-                                )
-                            }
                         }
-                    }
-                    .graphicsLayer {
-                        val flipMultiplier = if (isFlippedInPreview) -1f else 1f
-                        scaleX = zoomScale * flipMultiplier
-                        scaleY = zoomScale
-                        translationX = panOffset.x
-                        translationY = panOffset.y
-                    }
-            )
+                        .graphicsLayer {
+                            val flipMultiplier = if (isFlippedInPreview) -1f else 1f
+                            scaleX = zoomScale * flipMultiplier
+                            scaleY = zoomScale
+                            translationX = panOffset.x
+                            translationY = panOffset.y
+                        }
+                )
+            }
         }
 
         Row(

@@ -2,6 +2,8 @@ package com.ren42377.mirror.ui.preview
 
 import android.net.Uri
 import android.view.LayoutInflater
+import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -56,7 +58,9 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.ren42377.mirror.R
+import com.ren42377.mirror.camera.FaceZoomTracker
 import com.ren42377.mirror.model.CaptureResult
+import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -154,7 +158,24 @@ fun VideoPreviewScreen(
         }
     }
 
-    LaunchedEffect(exoPlayer, isPlaying, isDraggingSlider) {
+    val playerView = remember(context) {
+        (LayoutInflater.from(context).inflate(
+            R.layout.exo_texture_player_view,
+            null,
+            false
+        ) as PlayerView).apply {
+            clipChildren = true
+            clipToPadding = true
+            findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
+                outlineProvider = ViewOutlineProvider.BOUNDS
+                clipToOutline = true
+                clipChildren = true
+                clipToPadding = true
+            }
+        }
+    }
+
+    LaunchedEffect(exoPlayer, isPlaying, isDraggingSlider, isMirroredPlayback, videoResult.zoomSamples) {
         while (true) {
             val total = exoPlayer.duration
             if (total > 0L) {
@@ -165,7 +186,10 @@ fun VideoPreviewScreen(
             if (!isDraggingSlider) {
                 sliderPositionMs = pos.toFloat()
             }
-            delay(50L)
+            val sampleTimeMs = if (isDraggingSlider) sliderPositionMs.toLong() else pos
+            val zoomSample = sampleFaceZoomAt(videoResult.zoomSamples, sampleTimeMs)
+            applyVideoZoomTransform(playerView, isMirroredPlayback, zoomSample)
+            delay(16L)
         }
     }
 
@@ -175,22 +199,19 @@ fun VideoPreviewScreen(
             .background(Color.Black)
     ) {
         AndroidView(
-            factory = { ctx ->
-                (LayoutInflater.from(ctx).inflate(
-                    R.layout.exo_texture_player_view,
-                    null,
-                    false
-                ) as PlayerView).apply {
+            factory = {
+                playerView.apply {
                     player = exoPlayer
-                    scaleX = if (isMirroredPlayback) -1f else 1f
                 }
             },
             modifier = Modifier.fillMaxSize(),
-            update = { playerView ->
-                if (playerView.player !== exoPlayer) {
-                    playerView.player = exoPlayer
+            update = { view ->
+                if (view.player !== exoPlayer) {
+                    view.player = exoPlayer
                 }
-                playerView.scaleX = if (isMirroredPlayback) -1f else 1f
+                val sampleTimeMs = if (isDraggingSlider) sliderPositionMs.toLong() else currentPositionMs
+                val zoomSample = sampleFaceZoomAt(videoResult.zoomSamples, sampleTimeMs)
+                applyVideoZoomTransform(view, isMirroredPlayback, zoomSample)
             }
         )
 
@@ -344,6 +365,88 @@ fun VideoPreviewScreen(
                 }
             }
         }
+    }
+}
+
+private fun sampleFaceZoomAt(
+    samples: List<FaceZoomSample>,
+    positionMs: Long
+): FaceZoomSample {
+    if (samples.isEmpty()) {
+        return FaceZoomSample(positionMs, 1f, 0.5f, 0.5f)
+    }
+    if (positionMs <= samples.first().timeMs) {
+        return samples.first()
+    }
+    if (positionMs >= samples.last().timeMs) {
+        return samples.last()
+    }
+    val idx = samples.binarySearchBy(positionMs) { it.timeMs }
+    if (idx >= 0) {
+        return samples[idx]
+    }
+    val insertIndex = (-idx - 1).coerceIn(1, samples.lastIndex)
+    val s0 = samples[insertIndex - 1]
+    val s1 = samples[insertIndex]
+    val span = (s1.timeMs - s0.timeMs).coerceAtLeast(1L).toFloat()
+    val t = ((positionMs - s0.timeMs).toFloat() / span).coerceIn(0f, 1f)
+    return FaceZoomSample(
+        timeMs = positionMs,
+        zoom = s0.zoom + (s1.zoom - s0.zoom) * t,
+        normX = s0.normX + (s1.normX - s0.normX) * t,
+        normY = s0.normY + (s1.normY - s0.normY) * t
+    )
+}
+
+private fun applyVideoZoomTransform(
+    playerView: PlayerView,
+    isMirrored: Boolean,
+    sample: FaceZoomSample
+) {
+    val contentFrame = playerView.findViewById<ViewGroup>(androidx.media3.ui.R.id.exo_content_frame)
+    contentFrame?.let { frame ->
+        if (!frame.clipToOutline) {
+            frame.outlineProvider = ViewOutlineProvider.BOUNDS
+            frame.clipToOutline = true
+            frame.clipChildren = true
+            frame.clipToPadding = true
+        }
+    }
+    val targetView = playerView.videoSurfaceView ?: return
+    playerView.scaleX = 1f
+    playerView.scaleY = 1f
+    playerView.translationX = 0f
+    playerView.translationY = 0f
+
+    val flipSign = if (isMirrored) -1f else 1f
+    val activeZoom = sample.zoom.coerceIn(1f, FaceZoomTracker.MAX_FACE_ZOOM)
+    targetView.scaleX = flipSign * activeZoom
+    targetView.scaleY = activeZoom
+
+    val w = targetView.width.toFloat()
+    val h = targetView.height.toFloat()
+    if (w > 0f && h > 0f && activeZoom > 1.001f) {
+        val videoAspect = (w / h).coerceIn(0.4f, 1f)
+        val sensorAspect = 0.75f
+        val mappedNormX = if (videoAspect < sensorAspect) {
+            ((sample.normX - 0.5f) * (sensorAspect / videoAspect) + 0.5f).coerceIn(0f, 1f)
+        } else {
+            sample.normX.coerceIn(0f, 1f)
+        }
+        val mappedNormY = if (videoAspect > sensorAspect) {
+            ((sample.normY - 0.5f) * (videoAspect / sensorAspect) + 0.5f).coerceIn(0f, 1f)
+        } else {
+            sample.normY.coerceIn(0f, 1f)
+        }
+        val maxTx = (activeZoom - 1f) * w * 0.5f
+        val maxTy = (activeZoom - 1f) * h * 0.5f
+        val desiredTx = (0.5f - mappedNormX) * w * targetView.scaleX
+        val desiredTy = (0.5f - mappedNormY) * h * activeZoom
+        targetView.translationX = desiredTx.coerceIn(-maxTx, maxTx)
+        targetView.translationY = desiredTy.coerceIn(-maxTy, maxTy)
+    } else {
+        targetView.translationX = 0f
+        targetView.translationY = 0f
     }
 }
 
