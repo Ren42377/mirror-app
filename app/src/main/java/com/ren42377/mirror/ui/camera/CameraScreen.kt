@@ -1493,10 +1493,10 @@ private fun ZoomRulerDial(
 
     val stopBookmarks = remember(minZoom, maxZoom) {
         val candidates = listOf(1f, 1.5f, 2f, 3f, 5f, 8f, 10f, 15f, maxZoom)
-        buildList {
+        buildList<Float> {
             candidates.forEach { stop ->
                 val clamped = stop.coerceIn(minZoom, maxZoom)
-                if (none { abs(it - clamped) < 0.22f }) {
+                if (none { existing -> abs(existing - clamped) < 0.22f }) {
                     add(clamped)
                 }
             }
