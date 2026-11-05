@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ren42377.mirror.model.CaptureResult
@@ -157,6 +158,8 @@ fun PhotoPreviewScreen(
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
@@ -198,6 +201,8 @@ fun PhotoPreviewScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                         }
@@ -291,6 +296,8 @@ fun PhotoPreviewScreen(
                     color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
                 )
             }
@@ -328,7 +335,7 @@ fun PhotoPreviewScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
                 .align(Alignment.BottomCenter),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -346,6 +353,8 @@ fun PhotoPreviewScreen(
                         text = "Double-tap or pinch to zoom",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                     )
                 }
@@ -358,11 +367,14 @@ fun PhotoPreviewScreen(
                 border = BorderStroke(
                     1.dp,
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                )
+                ),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     PreviewModePill(
@@ -372,12 +384,13 @@ fun PhotoPreviewScreen(
                         onClick = {
                             isCompareMode = false
                             isFlippedInPreview = false
-                        }
+                        },
+                        modifier = Modifier.weight(1f)
                     )
 
                     PreviewModePill(
                         icon = Icons.Default.Flip,
-                        label = "Flip Photo",
+                        label = "Flip",
                         selected = !isCompareMode && isFlippedInPreview,
                         onClick = {
                             if (isCompareMode) {
@@ -386,7 +399,8 @@ fun PhotoPreviewScreen(
                             } else {
                                 isFlippedInPreview = !isFlippedInPreview
                             }
-                        }
+                        },
+                        modifier = Modifier.weight(1f)
                     )
 
                     PreviewModePill(
@@ -397,7 +411,8 @@ fun PhotoPreviewScreen(
                             isCompareMode = !isCompareMode
                             zoomScale = 1f
                             panOffset = Offset.Zero
-                        }
+                        },
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
@@ -410,7 +425,8 @@ private fun PreviewModePill(
     icon: ImageVector,
     label: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val containerColor by animateColorAsState(
         targetValue = if (selected) {
@@ -432,10 +448,14 @@ private fun PreviewModePill(
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(24.dp),
-        color = containerColor
+        color = containerColor,
+        modifier = modifier.height(46.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -449,7 +469,10 @@ private fun PreviewModePill(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = contentColor
+                color = contentColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

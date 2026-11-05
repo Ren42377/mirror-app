@@ -49,6 +49,7 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
@@ -63,15 +64,22 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -115,20 +123,26 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -147,6 +161,8 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.abs
+import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -263,6 +279,8 @@ fun CameraScreen(
     var currentZoomRatio by remember { mutableFloatStateOf(1f) }
     var minZoomRatio by remember { mutableFloatStateOf(1f) }
     var maxZoomRatio by remember { mutableFloatStateOf(1f) }
+    var isZoomDialExpanded by remember { mutableStateOf(false) }
+    var lastZoomTouchTimestamp by remember { mutableLongStateOf(0L) }
     var lensSwitchRotationCount by remember { mutableIntStateOf(0) }
 
     var tapFocusOffset by remember { mutableStateOf<Offset?>(null) }
@@ -297,6 +315,19 @@ fun CameraScreen(
         if (tapFocusTimestamp > 0L) {
             delay(1200L)
             tapFocusOffset = null
+        }
+    }
+
+    LaunchedEffect(isZoomDialExpanded, lastZoomTouchTimestamp, uiState.isFaceAutoZoomEnabled) {
+        if (uiState.isFaceAutoZoomEnabled) {
+            isZoomDialExpanded = false
+            return@LaunchedEffect
+        }
+        if (isZoomDialExpanded && lastZoomTouchTimestamp > 0L) {
+            delay(2600L)
+            if (SystemClock.elapsedRealtime() - lastZoomTouchTimestamp >= 2500L) {
+                isZoomDialExpanded = false
+            }
         }
     }
 
@@ -385,6 +416,8 @@ fun CameraScreen(
                     currentZoomRatio = newRatio
                     minZoomRatio = zoomState.minZoomRatio
                     maxZoomRatio = zoomState.maxZoomRatio
+                    isZoomDialExpanded = true
+                    lastZoomTouchTimestamp = SystemClock.elapsedRealtime()
                     return true
                 }
             }
@@ -407,6 +440,7 @@ fun CameraScreen(
                     tapFocusOffset = Offset(event.x, event.y)
                     tapFocusTimestamp = SystemClock.elapsedRealtime()
                     lastAutoMeterTimestamp = tapFocusTimestamp
+                    isZoomDialExpanded = false
                     return true
                 }
             }
@@ -539,6 +573,7 @@ fun CameraScreen(
             currentZoomRatio = appliedZoom.current
             minZoomRatio = appliedZoom.min
             maxZoomRatio = appliedZoom.max
+            isZoomDialExpanded = false
             optionsController.attach(camera)
 
             val deliveredSize = configuredImageCapture.resolutionInfo?.resolution
@@ -569,6 +604,7 @@ fun CameraScreen(
                 currentZoomRatio = appliedZoom.current
                 minZoomRatio = appliedZoom.min
                 maxZoomRatio = appliedZoom.max
+                isZoomDialExpanded = false
                 optionsController.attach(camera)
                 if (targetPhotoSize != null) {
                     viewModel.markPhotoSizeUnsupported(resolvedLensFacing, targetPhotoSize)
@@ -657,7 +693,7 @@ fun CameraScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .align(Alignment.TopCenter)
         ) {
             Row(
@@ -698,7 +734,9 @@ fun CameraScreen(
                                 text = formatDuration(uiState.recordingSeconds),
                                 color = MaterialTheme.colorScheme.onErrorContainer,
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -732,11 +770,15 @@ fun CameraScreen(
                                 text = if (uiState.isMirroredOnScreen) "Mirror View" else "True View",
                                 color = MaterialTheme.colorScheme.onSurface,
                                 style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Surface(
                     shape = CircleShape,
@@ -783,7 +825,10 @@ fun CameraScreen(
                             contentDescription = "Settings",
                             active = uiState.isSettingsOpen,
                             enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
-                            onClick = { viewModel.openSettingsSheet() }
+                            onClick = {
+                                isZoomDialExpanded = false
+                                viewModel.openSettingsSheet()
+                            }
                         )
                     }
                 }
@@ -809,7 +854,7 @@ fun CameraScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -818,7 +863,7 @@ fun CameraScreen(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Slider(
                             value = uiState.exposureIndex.toFloat(),
                             onValueChange = { value ->
@@ -838,6 +883,8 @@ fun CameraScreen(
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 textAlign = TextAlign.Center
                             )
@@ -851,7 +898,11 @@ fun CameraScreen(
                                 }
                             }
                         ) {
-                            Text(text = "Auto")
+                            Text(
+                                text = "Auto",
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                     }
                 }
@@ -862,7 +913,7 @@ fun CameraScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 18.dp)
+                .padding(horizontal = 14.dp, vertical = 16.dp)
                 .align(Alignment.BottomCenter),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -879,7 +930,7 @@ fun CameraScreen(
                     modifier = Modifier.padding(bottom = 12.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -901,6 +952,8 @@ fun CameraScreen(
                             },
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
                             color = if (uiState.isFaceDetected) {
                                 MaterialTheme.colorScheme.onSecondaryContainer
                             } else {
@@ -910,15 +963,24 @@ fun CameraScreen(
                     }
                 }
             } else if (maxZoomRatio > 1.05f) {
-                ZoomPresetBar(
+                ExpandableZoomDialControl(
                     currentZoom = currentZoomRatio,
                     minZoom = minZoomRatio,
                     maxZoom = maxZoomRatio,
-                    onSelectZoom = { targetZoom ->
-                        val camera = activeCamera ?: return@ZoomPresetBar
-                        val clamped = targetZoom.coerceIn(minZoomRatio, maxZoomRatio)
+                    expanded = isZoomDialExpanded,
+                    onExpand = {
+                        isZoomDialExpanded = true
+                        lastZoomTouchTimestamp = SystemClock.elapsedRealtime()
+                    },
+                    onCollapse = {
+                        isZoomDialExpanded = false
+                    },
+                    onZoomChange = { newZoom ->
+                        val camera = activeCamera ?: return@ExpandableZoomDialControl
+                        val clamped = newZoom.coerceIn(minZoomRatio, maxZoomRatio)
                         camera.cameraControl.setZoomRatio(clamped)
                         currentZoomRatio = clamped
+                        lastZoomTouchTimestamp = SystemClock.elapsedRealtime()
                     },
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
@@ -937,14 +999,14 @@ fun CameraScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.width(116.dp)
+                        modifier = Modifier.weight(1f)
                     ) {
                         val flipContainer by animateColorAsState(
                             targetValue = if (uiState.isFlipped) {
@@ -982,7 +1044,9 @@ fun CameraScreen(
                             Text(
                                 text = "Flip",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
 
@@ -1020,7 +1084,9 @@ fun CameraScreen(
                                 Text(
                                     text = "Lens",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                             }
                         }
@@ -1038,7 +1104,7 @@ fun CameraScreen(
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
-                            .size(80.dp)
+                            .size(78.dp)
                             .scale(shutterScale)
                             .border(
                                 width = 3.dp,
@@ -1100,7 +1166,7 @@ fun CameraScreen(
                     }
 
                     Box(
-                        modifier = Modifier.width(116.dp),
+                        modifier = Modifier.weight(1f),
                         contentAlignment = Alignment.CenterEnd
                     ) {
                         val recordCorner by animateDpAsState(
@@ -1247,7 +1313,9 @@ fun CameraScreen(
                                     MaterialTheme.colorScheme.error
                                 } else {
                                     MaterialTheme.colorScheme.onSurfaceVariant
-                                }
+                                },
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -1323,76 +1391,352 @@ private fun TopBarToggleIcon(
     }
 }
 
+/**
+ * Single zoom button ("1x") that expands into a curved tick-mark ruler dial when pressed or dragged.
+ */
 @Composable
-private fun ZoomPresetBar(
+private fun ExpandableZoomDialControl(
     currentZoom: Float,
     minZoom: Float,
     maxZoom: Float,
-    onSelectZoom: (Float) -> Unit,
+    expanded: Boolean,
+    onExpand: () -> Unit,
+    onCollapse: () -> Unit,
+    onZoomChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val presets = remember(minZoom, maxZoom) {
+    val latestZoom by rememberUpdatedState(currentZoom)
+    val latestOnZoomChange by rememberUpdatedState(onZoomChange)
+    val latestOnExpand by rememberUpdatedState(onExpand)
+
+    AnimatedContent(
+        targetState = expanded,
+        transitionSpec = {
+            (fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.92f))
+                .togetherWith(fadeOut(animationSpec = tween(150)) + scaleOut(targetScale = 0.92f))
+        },
+        label = "zoomDialTransition",
+        modifier = modifier
+    ) { isExpanded ->
+        if (!isExpanded) {
+            val formattedZoom = formatCompactZoom(currentZoom)
+            Surface(
+                onClick = onExpand,
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
+                tonalElevation = 4.dp,
+                border = BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                ),
+                modifier = Modifier
+                    .height(44.dp)
+                    .defaultMinSize(minWidth = 52.dp)
+                    .pointerInput(minZoom, maxZoom) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { latestOnExpand() },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                val currentFraction = zoomToFraction(latestZoom, minZoom, maxZoom)
+                                val deltaFraction = -dragAmount / 480f
+                                val nextZoom = fractionToZoom(
+                                    (currentFraction + deltaFraction).coerceIn(0f, 1f),
+                                    minZoom,
+                                    maxZoom
+                                )
+                                latestOnZoomChange(nextZoom)
+                            }
+                        )
+                    }
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    Text(
+                        text = formattedZoom,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        } else {
+            ZoomRulerDial(
+                currentZoom = currentZoom,
+                minZoom = minZoom,
+                maxZoom = maxZoom,
+                onZoomChange = onZoomChange,
+                onCollapse = onCollapse
+            )
+        }
+    }
+}
+
+@Composable
+private fun ZoomRulerDial(
+    currentZoom: Float,
+    minZoom: Float,
+    maxZoom: Float,
+    onZoomChange: (Float) -> Unit,
+    onCollapse: () -> Unit
+) {
+    val density = LocalDensity.current
+    val accentColor = MaterialTheme.colorScheme.primary
+    val latestZoom by rememberUpdatedState(currentZoom)
+    val latestOnZoomChange by rememberUpdatedState(onZoomChange)
+    val latestOnCollapse by rememberUpdatedState(onCollapse)
+
+    var dialWidthPx by remember { mutableFloatStateOf(0f) }
+
+    val stopBookmarks = remember(minZoom, maxZoom) {
+        val candidates = listOf(1f, 1.5f, 2f, 3f, 5f, 8f, 10f, 15f, maxZoom)
         buildList {
-            add(1f.coerceIn(minZoom, maxZoom))
-            if (maxZoom >= 1.5f) add(1.5f)
-            if (maxZoom >= 2.0f) add(2.0f)
-        }.distinct()
+            candidates.forEach { stop ->
+                val clamped = stop.coerceIn(minZoom, maxZoom)
+                if (none { abs(it - clamped) < 0.22f }) {
+                    add(clamped)
+                }
+            }
+        }.sorted()
     }
 
+    val currentFraction = zoomToFraction(currentZoom, minZoom, maxZoom)
+    val rulerSpanPx = (dialWidthPx * 1.25f).coerceAtLeast(1f)
+    val focalMm = (currentZoom * 26f).roundToInt()
+
     Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-        tonalElevation = 4.dp,
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF0E1315).copy(alpha = 0.84f),
         border = BorderStroke(
             1.dp,
             MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
         ),
-        modifier = modifier
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            presets.forEach { preset ->
-                val isSelected = abs(currentZoom - preset) < 0.12f
-                val pillContainer by animateColorAsState(
-                    targetValue = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(92.dp)
+            .onSizeChanged { size ->
+                dialWidthPx = size.width.toFloat()
+            }
+            .pointerInput(minZoom, maxZoom) {
+                detectTapGestures { tapOffset ->
+                    val width = size.width.toFloat().coerceAtLeast(1f)
+                    val span = width * 1.25f
+                    val dxFromCenter = tapOffset.x - (width / 2f)
+                    if (abs(dxFromCenter) < with(density) { 28.dp.toPx() }) {
+                        latestOnCollapse()
                     } else {
-                        Color.Transparent
-                    },
-                    label = "zoomPresetContainer"
-                )
-                val pillContent by animateColorAsState(
-                    targetValue = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    label = "zoomPresetContent"
-                )
-                val label = if (isSelected) {
-                    String.format(Locale.US, "%.1fx", currentZoom).replace(".0x", "x")
-                } else {
-                    String.format(Locale.US, "%.1fx", preset).replace(".0x", "x")
-                }
-
-                Surface(
-                    onClick = { onSelectZoom(preset) },
-                    shape = CircleShape,
-                    color = pillContainer
-                ) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = pillContent,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
+                        val baseFraction = zoomToFraction(latestZoom, minZoom, maxZoom)
+                        val tappedFraction = (baseFraction + (dxFromCenter / span)).coerceIn(0f, 1f)
+                        val rawTappedZoom = fractionToZoom(tappedFraction, minZoom, maxZoom)
+                        val nearestStop = stopBookmarks.minByOrNull { abs(it - rawTappedZoom) }
+                        val targetZoom = if (nearestStop != null && abs(nearestStop - rawTappedZoom) / nearestStop < 0.16f) {
+                            nearestStop
+                        } else {
+                            rawTappedZoom
+                        }
+                        latestOnZoomChange(targetZoom)
+                    }
                 }
             }
+            .pointerInput(minZoom, maxZoom) {
+                detectHorizontalDragGestures { change, dragAmount ->
+                    change.consume()
+                    val width = size.width.toFloat().coerceAtLeast(1f)
+                    val span = width * 1.25f
+                    val baseFraction = zoomToFraction(latestZoom, minZoom, maxZoom)
+                    val nextFraction = (baseFraction - (dragAmount / span)).coerceIn(0f, 1f)
+                    val rawZoom = fractionToZoom(nextFraction, minZoom, maxZoom)
+                    val snappedZoom = stopBookmarks.firstOrNull { stop ->
+                        abs(rawZoom - stop) < 0.025f * stop
+                    } ?: rawZoom
+                    latestOnZoomChange(snappedZoom)
+                }
+            }
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (dialWidthPx > 0f) {
+                val halfWidthPx = dialWidthPx / 2f
+                val centerClearancePx = with(density) { 46.dp.toPx() }
+                val maxArcPx = with(density) { 6.dp.toPx() }
+
+                stopBookmarks.forEach { stop ->
+                    val stopFraction = zoomToFraction(stop, minZoom, maxZoom)
+                    val dxPx = (stopFraction - currentFraction) * rulerSpanPx
+                    if (abs(dxPx) > centerClearancePx && abs(dxPx) < halfWidthPx - with(density) { 18.dp.toPx() }) {
+                        val nx = (dxPx / halfWidthPx).coerceIn(-1f, 1f)
+                        val edgeAlpha = (1f - 0.7f * nx * nx).coerceIn(0f, 1f)
+                        val centerFade = ((abs(dxPx) - centerClearancePx) / with(density) { 18.dp.toPx() })
+                            .coerceIn(0f, 1f)
+                        val combinedAlpha = edgeAlpha * centerFade
+                        val arcOffsetY = -(nx * nx * maxArcPx).roundToInt()
+                        val stopMm = (stop * 26f).roundToInt()
+
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .offset {
+                                    IntOffset(
+                                        x = dxPx.roundToInt(),
+                                        y = with(density) { 10.dp.roundToPx() } + arcOffsetY
+                                    )
+                                }
+                                .graphicsLayer {
+                                    alpha = combinedAlpha
+                                }
+                        ) {
+                            Text(
+                                text = formatBookmarkStop(stop),
+                                color = Color.White.copy(alpha = 0.85f),
+                                fontSize = 13.sp,
+                                lineHeight = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "${stopMm}mm",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 9.sp,
+                                lineHeight = 11.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp)
+            ) {
+                Text(
+                    text = String.format(Locale.US, "%.1fx", currentZoom).replace(".0x", "x"),
+                    color = accentColor,
+                    fontSize = 19.sp,
+                    lineHeight = 21.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false
+                )
+                Text(
+                    text = "${focalMm}mm",
+                    color = Color.White.copy(alpha = 0.72f),
+                    fontSize = 10.sp,
+                    lineHeight = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(42.dp)
+                    .align(Alignment.BottomCenter)
+            ) {
+                val width = size.width
+                val height = size.height
+                val centerX = width / 2f
+                val halfWidth = (width / 2f).coerceAtLeast(1f)
+                val span = (width * 1.25f).coerceAtLeast(1f)
+                val maxArc = 7.dp.toPx()
+                val baseBottomY = height - 8.dp.toPx()
+                val minorTickHeight = 10.dp.toPx()
+                val majorTickHeight = 15.dp.toPx()
+                val centerTickHeight = 20.dp.toPx()
+
+                val totalTicks = 60
+                for (i in 0..totalTicks) {
+                    val tickFraction = i.toFloat() / totalTicks.toFloat()
+                    val x = centerX + (tickFraction - currentFraction) * span
+                    if (x < 8.dp.toPx() || x > width - 8.dp.toPx()) continue
+
+                    val dx = x - centerX
+                    val nx = (dx / halfWidth).coerceIn(-1f, 1f)
+                    val alpha = (1f - 0.82f * nx * nx).coerceIn(0.08f, 1f)
+                    val curveY = -(nx * nx) * maxArc
+
+                    val tickZoom = fractionToZoom(tickFraction, minZoom, maxZoom)
+                    val isNearStop = stopBookmarks.any { stop ->
+                        abs(tickFraction - zoomToFraction(stop, minZoom, maxZoom)) < (0.5f / totalTicks)
+                    } || i % 10 == 0
+
+                    val tickH = if (isNearStop) majorTickHeight else minorTickHeight
+                    val strokeW = if (isNearStop) 2.dp.toPx() else 1.2.dp.toPx()
+                    val tickColor = if (isNearStop) {
+                        Color.White.copy(alpha = (alpha * 0.9f).coerceIn(0f, 1f))
+                    } else {
+                        Color.White.copy(alpha = (alpha * 0.42f).coerceIn(0f, 1f))
+                    }
+
+                    val bottomY = baseBottomY + curveY
+                    val topY = bottomY - tickH
+
+                    drawLine(
+                        color = tickColor,
+                        start = Offset(x, topY),
+                        end = Offset(x, bottomY),
+                        strokeWidth = strokeW,
+                        cap = StrokeCap.Round
+                    )
+                }
+
+                drawLine(
+                    color = accentColor,
+                    start = Offset(centerX, baseBottomY - centerTickHeight),
+                    end = Offset(centerX, baseBottomY + 2.dp.toPx()),
+                    strokeWidth = 3.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = Color.White,
+                    start = Offset(centerX, baseBottomY - centerTickHeight + 2.dp.toPx()),
+                    end = Offset(centerX, baseBottomY),
+                    strokeWidth = 1.4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
         }
+    }
+}
+
+private fun zoomToFraction(zoom: Float, minZoom: Float, maxZoom: Float): Float {
+    val safeMin = minZoom.coerceAtLeast(0.1f)
+    val safeMax = maxZoom.coerceAtLeast(safeMin + 0.01f)
+    val clamped = zoom.coerceIn(safeMin, safeMax)
+    return (ln(clamped / safeMin) / ln(safeMax / safeMin)).coerceIn(0f, 1f)
+}
+
+private fun fractionToZoom(fraction: Float, minZoom: Float, maxZoom: Float): Float {
+    val safeMin = minZoom.coerceAtLeast(0.1f)
+    val safeMax = maxZoom.coerceAtLeast(safeMin + 0.01f)
+    val clamped = fraction.coerceIn(0f, 1f)
+    return (safeMin * (safeMax / safeMin).pow(clamped)).coerceIn(safeMin, safeMax)
+}
+
+private fun formatCompactZoom(zoom: Float): String {
+    val roundedTenths = (zoom * 10f).roundToInt() / 10f
+    return if (abs(roundedTenths - roundedTenths.roundToInt()) < 0.05f) {
+        "${roundedTenths.roundToInt()}x"
+    } else {
+        String.format(Locale.US, "%.1fx", roundedTenths)
+    }
+}
+
+private fun formatBookmarkStop(stop: Float): String {
+    val roundedTenths = (stop * 10f).roundToInt() / 10f
+    return if (abs(roundedTenths - roundedTenths.roundToInt()) < 0.05f) {
+        roundedTenths.roundToInt().toString()
+    } else {
+        String.format(Locale.US, "%.1f", roundedTenths)
     }
 }
 
@@ -1464,7 +1808,9 @@ private fun CameraPermissionDeniedContent(
                             Text(
                                 text = "100% Private | Never saved to storage",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
@@ -1499,7 +1845,9 @@ private fun CameraPermissionDeniedContent(
                         Text(
                             text = "Grant Camera Permission",
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
 
@@ -1514,7 +1862,9 @@ private fun CameraPermissionDeniedContent(
                     ) {
                         Text(
                             text = "Open App Settings",
-                            style = MaterialTheme.typography.labelLarge
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }

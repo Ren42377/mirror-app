@@ -104,7 +104,7 @@ fun SettingsSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+                .padding(start = 18.dp, end = 18.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -126,16 +126,20 @@ fun SettingsSheet(
                     }
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Camera Settings",
                         style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Photo resolution, video quality, and stabilization",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -239,7 +243,13 @@ fun SettingsSheet(
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { onSelectVideoQuality(mode.quality) },
-                                    label = { Text(text = mode.quality.label) },
+                                    label = {
+                                        Text(
+                                            text = mode.quality.label,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    },
                                     leadingIcon = if (isSelected) {
                                         {
                                             Icon(
@@ -285,7 +295,13 @@ fun SettingsSheet(
                             FilterChip(
                                 selected = isSelected,
                                 onClick = { onSelectFrameRate(rate) },
-                                label = { Text(text = "$rate fps") },
+                                label = {
+                                    Text(
+                                        text = "$rate fps",
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                },
                                 leadingIcon = if (isSelected) {
                                     {
                                         Icon(
@@ -392,7 +408,7 @@ private fun PhotoResolutionTile(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+                .padding(horizontal = 4.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -404,19 +420,21 @@ private fun PhotoResolutionTile(
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = "${size.width} x ${size.height}",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                 color = textColor,
                 maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
             if (isHighRes) {
                 Text(
                     text = "High-Res",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
                     color = MaterialTheme.colorScheme.tertiary,
                     maxLines = 1,
+                    softWrap = false,
                     textAlign = TextAlign.Center
                 )
             }
@@ -446,6 +464,8 @@ private fun MegapixelBadgeIcon(
                 fontSize = 10.sp,
                 lineHeight = 10.sp,
                 fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                softWrap = false,
                 textAlign = TextAlign.Center
             )
             Text(
@@ -454,6 +474,8 @@ private fun MegapixelBadgeIcon(
                 fontSize = 8.sp,
                 lineHeight = 8.sp,
                 fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                softWrap = false,
                 textAlign = TextAlign.Center
             )
         }
@@ -471,7 +493,10 @@ private fun SectionHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
@@ -482,10 +507,14 @@ private fun SectionHeader(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
         }
         if (trailingBadge != null) {
+            Spacer(modifier = Modifier.width(8.dp))
             Surface(
                 shape = RoundedCornerShape(50),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest
@@ -494,6 +523,8 @@ private fun SectionHeader(
                     text = trailingBadge,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                 )
             }
@@ -539,12 +570,16 @@ private fun SwitchRow(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             Spacer(modifier = Modifier.width(8.dp))
