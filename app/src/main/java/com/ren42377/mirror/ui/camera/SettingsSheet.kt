@@ -22,32 +22,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.EightMp
-import androidx.compose.material.icons.filled.EighteenMp
-import androidx.compose.material.icons.filled.ElevenMp
-import androidx.compose.material.icons.filled.FifteenMp
-import androidx.compose.material.icons.filled.FiveMp
-import androidx.compose.material.icons.filled.FourMp
-import androidx.compose.material.icons.filled.FourteenMp
-import androidx.compose.material.icons.filled.NineMp
-import androidx.compose.material.icons.filled.NineteenMp
 import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.SevenMp
-import androidx.compose.material.icons.filled.SeventeenMp
-import androidx.compose.material.icons.filled.SixMp
-import androidx.compose.material.icons.filled.SixteenMp
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.TenMp
-import androidx.compose.material.icons.filled.ThirteenMp
-import androidx.compose.material.icons.filled.ThreeMp
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.TwelveMp
-import androidx.compose.material.icons.filled.TwentyFourMp
-import androidx.compose.material.icons.filled.TwentyMp
-import androidx.compose.material.icons.filled.TwentyOneMp
-import androidx.compose.material.icons.filled.TwentyThreeMp
-import androidx.compose.material.icons.filled.TwentyTwoMp
-import androidx.compose.material.icons.filled.TwoMp
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -453,72 +430,33 @@ private fun MegapixelBadgeIcon(
     tint: Color,
     cutoutTextColor: Color
 ) {
-    val vectorIcon = megapixelVectorIcon(megapixels)
-    if (vectorIcon != null) {
-        Icon(
-            imageVector = vectorIcon,
-            contentDescription = "$megapixels MP",
-            tint = tint,
-            modifier = Modifier.size(30.dp)
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(26.dp)
-                .background(color = tint, shape = RoundedCornerShape(4.dp)),
-            contentAlignment = Alignment.Center
+    Box(
+        modifier = Modifier
+            .size(width = 34.dp, height = 28.dp)
+            .background(color = tint, shape = RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = megapixels.toString(),
-                    color = cutoutTextColor,
-                    fontSize = 9.sp,
-                    lineHeight = 9.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    text = "MP",
-                    color = cutoutTextColor,
-                    fontSize = 7.sp,
-                    lineHeight = 7.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-            }
+            Text(
+                text = megapixels.toString(),
+                color = cutoutTextColor,
+                fontSize = 10.sp,
+                lineHeight = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "MP",
+                color = cutoutTextColor,
+                fontSize = 8.sp,
+                lineHeight = 8.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
         }
-    }
-}
-
-private fun megapixelVectorIcon(megapixels: Int): ImageVector? {
-    return when (megapixels) {
-        2 -> Icons.Default.TwoMp
-        3 -> Icons.Default.ThreeMp
-        4 -> Icons.Default.FourMp
-        5 -> Icons.Default.FiveMp
-        6 -> Icons.Default.SixMp
-        7 -> Icons.Default.SevenMp
-        8 -> Icons.Default.EightMp
-        9 -> Icons.Default.NineMp
-        10 -> Icons.Default.TenMp
-        11 -> Icons.Default.ElevenMp
-        12 -> Icons.Default.TwelveMp
-        13 -> Icons.Default.ThirteenMp
-        14 -> Icons.Default.FourteenMp
-        15 -> Icons.Default.FifteenMp
-        16 -> Icons.Default.SixteenMp
-        17 -> Icons.Default.SeventeenMp
-        18 -> Icons.Default.EighteenMp
-        19 -> Icons.Default.NineteenMp
-        20 -> Icons.Default.TwentyMp
-        21 -> Icons.Default.TwentyOneMp
-        22 -> Icons.Default.TwentyTwoMp
-        23 -> Icons.Default.TwentyThreeMp
-        24 -> Icons.Default.TwentyFourMp
-        else -> null
     }
 }
 
