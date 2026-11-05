@@ -1,0 +1,100 @@
+name: Android CI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Cache fallback CI signing keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/mirror-ci-signing
+          key: mirror-ci-signing-v1
+
+      - name: Prepare signing keystore
+        env:
+          SECRET_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SECRET_STORE_PASS: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ -n "$SECRET_KEYSTORE_B64" ] && [ -n "$SECRET_STORE_PASS" ] && [ -n "$SECRET_KEY_ALIAS" ] && [ -n "$SECRET_KEY_PASS" ]; then
+            KEYSTORE_FILE="$RUNNER_TEMP/mirror.jks"
+            echo "$SECRET_KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
+            echo "SIGNING_STORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "SIGNING_STORE_PASSWORD=$SECRET_STORE_PASS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=$SECRET_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=$SECRET_KEY_PASS" >> "$GITHUB_ENV"
+          else
+            SIGNING_DIR="$HOME/.android/mirror-ci-signing"
+            mkdir -p "$SIGNING_DIR"
+            KEYSTORE_FILE="$SIGNING_DIR/mirror.jks"
+            PASS_FILE="$SIGNING_DIR/pass.txt"
+            if [ ! -f "$KEYSTORE_FILE" ] || [ ! -f "$PASS_FILE" ]; then
+              openssl rand -hex 16 > "$PASS_FILE"
+              PASS=$(cat "$PASS_FILE")
+              rm -f "$KEYSTORE_FILE"
+              keytool -genkeypair \
+                -v \
+                -keystore "$KEYSTORE_FILE" \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -alias "mirror" \
+                -storepass "$PASS" \
+                -keypass "$PASS" \
+                -dname "CN=Mirror App, OU=Mobile, O=Ren42377, L=Jakarta, ST=DKI Jakarta, C=ID"
+            fi
+            PASS=$(cat "$PASS_FILE")
+            echo "SIGNING_STORE_FILE=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+            echo "SIGNING_STORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=mirror" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=$PASS" >> "$GITHUB_ENV"
+          fi
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug and Release APKs
+        run: ./gradlew assembleDebug assembleRelease
+
+      - name: Prepare APK assets
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk cermin-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk cermin-release.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" cermin-debug.apk cermin-release.apk --clobber
+          else
+            gh release create "$TAG" cermin-debug.apk cermin-release.apk \
+              --title "Build ${{ github.run_number }}" \
+              --notes "Automated APK build ${{ github.run_number }}"
+          fi
