@@ -17,6 +17,9 @@ import androidx.camera.core.CameraInfo
 import androidx.camera.video.QualitySelector
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Everything the app needs to know about what the active camera can really do. */
@@ -55,6 +58,50 @@ data class CameraCapabilities(
 }
 
 private const val MIN_PHOTO_PIXELS = 640L * 480L
+private const val MAX_PHOTO_GRID_OPTIONS = 6
+
+/**
+ * Curates raw camera JPEG sizes into a concise list of distinct megapixel options suitable
+ * for a multi-column grid, preferring 4:3 sizes that match the viewfinder aspect ratio.
+ */
+fun curatePhotoSizes(
+    rawSizes: List<Size>,
+    maxCount: Int = MAX_PHOTO_GRID_OPTIONS
+): List<Size> {
+    val validSizes = rawSizes
+        .filter { it.width.toLong() * it.height.toLong() >= MIN_PHOTO_PIXELS }
+        .distinct()
+        .sortedByDescending { it.width.toLong() * it.height.toLong() }
+
+    if (validSizes.isEmpty()) return emptyList()
+
+    val fourByThreeSizes = validSizes.filter { size ->
+        val longSide = max(size.width, size.height).toDouble()
+        val shortSide = min(size.width, size.height).toDouble().coerceAtLeast(1.0)
+        abs((longSide / shortSide) - (4.0 / 3.0)) < 0.06
+    }
+
+    val candidatePool = if (fourByThreeSizes.isNotEmpty()) fourByThreeSizes else validSizes
+
+    val distinctByMegapixel = candidatePool
+        .groupBy { size ->
+            ((size.width.toLong() * size.height.toLong()) / 1_000_000.0)
+                .roundToInt()
+                .coerceAtLeast(1)
+        }
+        .values
+        .map { group -> group.first() }
+        .sortedByDescending { it.width.toLong() * it.height.toLong() }
+
+    if (distinctByMegapixel.size >= 3 || distinctByMegapixel.size == candidatePool.size) {
+        return distinctByMegapixel.take(maxCount)
+    }
+
+    val combined = (distinctByMegapixel + candidatePool)
+        .distinct()
+        .sortedByDescending { it.width.toLong() * it.height.toLong() }
+    return combined.take(maxCount)
+}
 
 /** Reads the real capabilities of a camera from Camera2 characteristics and CameraX. */
 @OptIn(ExperimentalCamera2Interop::class)
@@ -78,10 +125,7 @@ fun queryCameraCapabilities(cameraInfo: CameraInfo): CameraCapabilities {
     val highResSizes = runCatching {
         streamMap?.getHighResolutionOutputSizes(ImageFormat.JPEG)?.toList()
     }.getOrNull().orEmpty()
-    val photoSizes = (normalSizes + highResSizes)
-        .filter { it.width.toLong() * it.height.toLong() >= MIN_PHOTO_PIXELS }
-        .distinct()
-        .sortedByDescending { it.width.toLong() * it.height.toLong() }
+    val photoSizes = curatePhotoSizes(normalSizes + highResSizes)
 
     val videoStabilizationModes =
         characteristic(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
