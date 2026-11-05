@@ -1102,10 +1102,10 @@ private fun buildPreviewUseCase(
                 CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
             )
             val preferredFaceMode = availableFaceModes?.maxOrNull()
-                ?: CameraCharacteristics.STATISTICS_INFO_FACE_DETECT_MODE_OFF
+                ?: CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
 
             if (activeArray != null &&
-                preferredFaceMode > CameraCharacteristics.STATISTICS_INFO_FACE_DETECT_MODE_OFF
+                preferredFaceMode > CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
             ) {
                 val extender = Camera2Interop.Extender(builder)
                 extender.setCaptureRequestOption(
