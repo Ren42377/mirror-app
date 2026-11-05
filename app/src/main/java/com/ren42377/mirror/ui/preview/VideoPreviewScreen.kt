@@ -19,12 +19,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -81,6 +83,7 @@ fun VideoPreviewScreen(
         return
     }
 
+    var isMirroredPlayback by remember(videoResult) { mutableStateOf(videoResult.mirrored) }
     var isPlaying by remember { mutableStateOf(true) }
     var isEnded by remember { mutableStateOf(false) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
@@ -179,7 +182,7 @@ fun VideoPreviewScreen(
                     false
                 ) as PlayerView).apply {
                     player = exoPlayer
-                    scaleX = if (videoResult.mirrored) -1f else 1f
+                    scaleX = if (isMirroredPlayback) -1f else 1f
                 }
             },
             modifier = Modifier.fillMaxSize(),
@@ -187,22 +190,58 @@ fun VideoPreviewScreen(
                 if (playerView.player !== exoPlayer) {
                     playerView.player = exoPlayer
                 }
-                playerView.scaleX = if (videoResult.mirrored) -1f else 1f
+                playerView.scaleX = if (isMirroredPlayback) -1f else 1f
             }
         )
 
-        FilledTonalIconButton(
-            onClick = handleClose,
+        Row(
             modifier = Modifier
+                .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(16.dp)
-                .size(48.dp)
-                .align(Alignment.TopStart)
+                .align(Alignment.TopCenter),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Close Video Preview"
-            )
+            FilledTonalIconButton(
+                onClick = handleClose,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Close Video Preview"
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = Color.Black.copy(alpha = 0.55f)
+            ) {
+                Text(
+                    text = if (isMirroredPlayback) "Mirror View" else "True View",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+
+            FilledTonalIconButton(
+                onClick = { isMirroredPlayback = !isMirroredPlayback },
+                modifier = Modifier.size(48.dp),
+                colors = if (isMirroredPlayback != videoResult.mirrored) {
+                    IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    IconButtonDefaults.filledTonalIconButtonColors()
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Flip,
+                    contentDescription = "Flip Video"
+                )
+            }
         }
 
         Surface(

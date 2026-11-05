@@ -71,4 +71,12 @@ class MirrorModelTest {
         val enabledState = MirrorUiState(minExposureIndex = -12, maxExposureIndex = 12)
         assertTrue(enabledState.hasExposureControl)
     }
+
+    @Test
+    fun ringLightAndFaceZoomDefaultToFalse() {
+        val state = MirrorUiState()
+        assertFalse(state.isRingLightEnabled)
+        assertFalse(state.isFaceAutoZoomEnabled)
+        assertNull(state.detectedFaceNormalizedBounds)
+    }
 }

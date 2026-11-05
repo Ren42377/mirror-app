@@ -3,6 +3,7 @@ package com.ren42377.mirror.ui
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.RectF
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.lifecycle.AndroidViewModel
@@ -13,6 +14,7 @@ import com.ren42377.mirror.model.AppSettings
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.model.VideoQualityOption
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,9 +68,32 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                     lensFacing = nextLens,
                     isFlipped = false,
                     exposureIndex = 0,
-                    isExposureSliderVisible = false
+                    isExposureSliderVisible = false,
+                    detectedFaceNormalizedBounds = null
                 )
             }
+        }
+    }
+
+    fun toggleRingLight() {
+        _uiState.update { current ->
+            current.copy(isRingLightEnabled = !current.isRingLightEnabled)
+        }
+    }
+
+    fun toggleFaceAutoZoom() {
+        _uiState.update { current ->
+            val nextEnabled = !current.isFaceAutoZoomEnabled
+            current.copy(
+                isFaceAutoZoomEnabled = nextEnabled,
+                detectedFaceNormalizedBounds = if (nextEnabled) current.detectedFaceNormalizedBounds else null
+            )
+        }
+    }
+
+    fun updateDetectedFace(normalizedBounds: RectF?) {
+        _uiState.update { current ->
+            current.copy(detectedFaceNormalizedBounds = normalizedBounds)
         }
     }
 
@@ -172,11 +197,24 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         sourceBitmap: Bitmap,
         rotationDegrees: Int,
         mirrorHorizontally: Boolean,
+        cropZoomFactor: Float = 1f,
+        cropCenterX: Float = 0.5f,
+        cropCenterY: Float = 0.5f,
         onComplete: () -> Unit
     ) {
         viewModelScope.launch {
             val transformed = withContext(Dispatchers.Default) {
-                transformBitmap(sourceBitmap, rotationDegrees, mirrorHorizontally)
+                val oriented = transformBitmap(sourceBitmap, rotationDegrees, mirrorHorizontally)
+                if (cropZoomFactor > 1.03f) {
+                    cropBitmapAroundCenter(
+                        source = oriented,
+                        zoomFactor = cropZoomFactor,
+                        normCenterX = cropCenterX,
+                        normCenterY = cropCenterY
+                    )
+                } else {
+                    oriented
+                }
             }
             clearCaptureResult()
             _captureResult.value = CaptureResult.Photo(transformed)
@@ -271,6 +309,26 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                 source.recycle()
             }
             return result
+        }
+
+        fun cropBitmapAroundCenter(
+            source: Bitmap,
+            zoomFactor: Float,
+            normCenterX: Float,
+            normCenterY: Float
+        ): Bitmap {
+            val safeZoom = zoomFactor.coerceIn(1f, 4f)
+            val cropWidth = (source.width / safeZoom).roundToInt().coerceIn(1, source.width)
+            val cropHeight = (source.height / safeZoom).roundToInt().coerceIn(1, source.height)
+            val centerX = (normCenterX.coerceIn(0f, 1f) * source.width).roundToInt()
+            val centerY = (normCenterY.coerceIn(0f, 1f) * source.height).roundToInt()
+            val left = (centerX - cropWidth / 2).coerceIn(0, (source.width - cropWidth).coerceAtLeast(0))
+            val top = (centerY - cropHeight / 2).coerceIn(0, (source.height - cropHeight).coerceAtLeast(0))
+            val cropped = Bitmap.createBitmap(source, left, top, cropWidth, cropHeight)
+            if (cropped !== source) {
+                source.recycle()
+            }
+            return cropped
         }
     }
 }

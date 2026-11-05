@@ -2,32 +2,46 @@ package com.ren42377.mirror.ui.camera
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.RectF
+import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Range
 import android.util.Size
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -41,6 +55,7 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +67,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -62,8 +78,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
@@ -76,21 +94,29 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -102,7 +128,9 @@ import com.ren42377.mirror.data.RecordingCacheManager
 import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -118,6 +146,7 @@ fun CameraScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
     var hasCameraPermission by remember {
@@ -166,6 +195,27 @@ fun CameraScreen(
         }
     }
 
+    DisposableEffect(context, uiState.isRingLightEnabled) {
+        val window = context.findActivity()?.window
+        if (window != null) {
+            val params = window.attributes
+            params.screenBrightness = if (uiState.isRingLightEnabled) {
+                1.0f
+            } else {
+                WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+            window.attributes = params
+        }
+        onDispose {
+            val activityWindow = context.findActivity()?.window
+            if (activityWindow != null) {
+                val params = activityWindow.attributes
+                params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                activityWindow.attributes = params
+            }
+        }
+    }
+
     if (!hasCameraPermission) {
         CameraPermissionDeniedContent(
             onRequestPermission = {
@@ -194,6 +244,14 @@ fun CameraScreen(
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
     var rebindTrigger by remember { mutableIntStateOf(0) }
 
+    var tapFocusOffset by remember { mutableStateOf<Offset?>(null) }
+    var tapFocusTimestamp by remember { mutableLongStateOf(0L) }
+    var lastAutoMeterTimestamp by remember { mutableLongStateOf(0L) }
+
+    var smoothedZoom by remember { mutableFloatStateOf(1f) }
+    var smoothedCenterX by remember { mutableFloatStateOf(0.5f) }
+    var smoothedCenterY by remember { mutableFloatStateOf(0.5f) }
+
     val previewView = remember {
         PreviewView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -202,6 +260,55 @@ fun CameraScreen(
             )
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FIT_CENTER
+        }
+    }
+
+    LaunchedEffect(tapFocusTimestamp) {
+        if (tapFocusTimestamp > 0L) {
+            delay(1200L)
+            tapFocusOffset = null
+        }
+    }
+
+    LaunchedEffect(uiState.isFaceAutoZoomEnabled, uiState.detectedFaceNormalizedBounds) {
+        while (true) {
+            val faceBounds = uiState.detectedFaceNormalizedBounds
+            if (uiState.isFaceAutoZoomEnabled && faceBounds != null) {
+                val faceHeight = faceBounds.height().coerceIn(0.08f, 0.85f)
+                val targetZoom = (0.42f / faceHeight).coerceIn(1.3f, 2.5f)
+                val targetX = faceBounds.centerX().coerceIn(0.15f, 0.85f)
+                val targetY = faceBounds.centerY().coerceIn(0.15f, 0.85f)
+                smoothedZoom += (targetZoom - smoothedZoom) * 0.14f
+                smoothedCenterX += (targetX - smoothedCenterX) * 0.14f
+                smoothedCenterY += (targetY - smoothedCenterY) * 0.14f
+            } else {
+                smoothedZoom += (1f - smoothedZoom) * 0.18f
+                smoothedCenterX += (0.5f - smoothedCenterX) * 0.18f
+                smoothedCenterY += (0.5f - smoothedCenterY) * 0.18f
+            }
+            delay(16L)
+        }
+    }
+
+    LaunchedEffect(activeCamera, uiState.detectedFaceNormalizedBounds) {
+        val camera = activeCamera ?: return@LaunchedEffect
+        val faceBounds = uiState.detectedFaceNormalizedBounds ?: return@LaunchedEffect
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAutoMeterTimestamp < 1200L) return@LaunchedEffect
+        lastAutoMeterTimestamp = now
+        runCatching {
+            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+            val point = factory.createPoint(
+                faceBounds.centerX().coerceIn(0.1f, 0.9f),
+                faceBounds.centerY().coerceIn(0.1f, 0.9f)
+            )
+            val action = FocusMeteringAction.Builder(
+                point,
+                FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AF
+            )
+                .setAutoCancelDuration(3, TimeUnit.SECONDS)
+                .build()
+            camera.cameraControl.startFocusAndMetering(action)
         }
     }
 
@@ -219,8 +326,33 @@ fun CameraScreen(
                 }
             }
         )
+        val tapGestureDetector = GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
+                    val camera = activeCamera ?: return false
+                    val point = previewView.meteringPointFactory.createPoint(event.x, event.y)
+                    val action = FocusMeteringAction.Builder(
+                        point,
+                        FocusMeteringAction.FLAG_AF or
+                            FocusMeteringAction.FLAG_AE or
+                            FocusMeteringAction.FLAG_AWB
+                    )
+                        .setAutoCancelDuration(4, TimeUnit.SECONDS)
+                        .build()
+                    camera.cameraControl.startFocusAndMetering(action)
+                    tapFocusOffset = Offset(event.x, event.y)
+                    tapFocusTimestamp = SystemClock.elapsedRealtime()
+                    lastAutoMeterTimestamp = tapFocusTimestamp
+                    return true
+                }
+            }
+        )
         previewView.setOnTouchListener { _, event ->
             scaleGestureDetector.onTouchEvent(event)
+            if (!scaleGestureDetector.isInProgress) {
+                tapGestureDetector.onTouchEvent(event)
+            }
             true
         }
         onDispose {
@@ -253,6 +385,15 @@ fun CameraScreen(
             val range = exposureState.exposureCompensationRange
             val clamped = uiState.exposureIndex.coerceIn(range.lower, range.upper)
             camera.cameraControl.setExposureCompensationIndex(clamped)
+        }
+    }
+
+    LaunchedEffect(activeCamera, uiState.isRingLightEnabled, uiState.lensFacing) {
+        val camera = activeCamera ?: return@LaunchedEffect
+        if (camera.cameraInfo.hasFlashUnit()) {
+            val enableTorch = uiState.isRingLightEnabled &&
+                uiState.lensFacing == CameraSelector.LENS_FACING_BACK
+            camera.cameraControl.enableTorch(enableTorch)
         }
     }
 
@@ -306,7 +447,14 @@ fun CameraScreen(
             ?.takeIf { photoSizes.contains(it) }
             ?: selectDefaultBinnedPhotoSize(photoSizes)
 
-        val previewUseCase = buildPreviewUseCase(previewView)
+        val previewUseCase = buildPreviewUseCase(
+            previewView = previewView,
+            cameraInfo = matchingCameraInfo,
+            lensFacing = resolvedLensFacing,
+            onFaceDetected = { normalizedRect ->
+                viewModel.updateDetectedFace(normalizedRect)
+            }
+        )
         val configuredImageCapture = buildImageCaptureUseCase(targetPhotoSize)
 
         try {
@@ -319,7 +467,11 @@ fun CameraScreen(
             )
             activeCamera = camera
             imageCapture = configuredImageCapture
-            configureCameraZoomAndExposure(camera, viewModel, uiState.exposureIndex)
+            configureCameraZoomAndExposure(
+                camera = camera,
+                viewModel = viewModel,
+                targetExposureIndex = uiState.exposureIndex
+            )
         } catch (_: Exception) {
             runCatching {
                 val fallbackImageCapture = ImageCapture.Builder()
@@ -334,7 +486,11 @@ fun CameraScreen(
                 )
                 activeCamera = camera
                 imageCapture = fallbackImageCapture
-                configureCameraZoomAndExposure(camera, viewModel, uiState.exposureIndex)
+                configureCameraZoomAndExposure(
+                    camera = camera,
+                    viewModel = viewModel,
+                    targetExposureIndex = uiState.exposureIndex
+                )
             }
         }
     }
@@ -348,9 +504,70 @@ fun CameraScreen(
             factory = { previewView },
             modifier = Modifier.fillMaxSize(),
             update = { view ->
-                view.scaleX = if (uiState.isFlipped) -1f else 1f
+                val flipMultiplier = if (uiState.isFlipped) -1f else 1f
+                val activeZoom = smoothedZoom.coerceIn(1f, 2.6f)
+                view.scaleX = flipMultiplier * activeZoom
+                view.scaleY = activeZoom
+                val width = view.width.toFloat()
+                val height = view.height.toFloat()
+                if (width > 0f && height > 0f && activeZoom > 1.01f) {
+                    val maxTx = (activeZoom - 1f) * width * 0.5f
+                    val maxTy = (activeZoom - 1f) * height * 0.5f
+                    val desiredTx = (0.5f - smoothedCenterX) * width * activeZoom * flipMultiplier
+                    val desiredTy = (0.5f - smoothedCenterY) * height * activeZoom
+                    view.translationX = desiredTx.coerceIn(-maxTx, maxTx)
+                    view.translationY = desiredTy.coerceIn(-maxTy, maxTy)
+                } else {
+                    view.translationX = 0f
+                    view.translationY = 0f
+                }
             }
         )
+
+        if (uiState.isFaceAutoZoomEnabled && uiState.detectedFaceNormalizedBounds != null) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val boxWidth = size.width * 0.48f
+                val boxHeight = boxWidth * 1.25f
+                val left = (size.width - boxWidth) / 2f
+                val top = (size.height - boxHeight) / 2f
+                drawRoundRect(
+                    color = Color(0xFF80D8FF).copy(alpha = 0.65f),
+                    topLeft = Offset(left, top),
+                    size = androidx.compose.ui.geometry.Size(boxWidth, boxHeight),
+                    cornerRadius = CornerRadius(24.dp.toPx(), 24.dp.toPx()),
+                    style = Stroke(width = 2.dp.toPx())
+                )
+            }
+        }
+
+        val currentTapFocus = tapFocusOffset
+        if (currentTapFocus != null) {
+            val ringSizeDp = 64.dp
+            val halfRingPx = with(density) { (ringSizeDp / 2).roundToPx() }
+            Box(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = currentTapFocus.x.roundToInt() - halfRingPx,
+                            y = currentTapFocus.y.roundToInt() - halfRingPx
+                        )
+                    }
+                    .size(ringSizeDp)
+                    .border(2.dp, Color(0xFFFFD54F), CircleShape)
+            )
+        }
+
+        if (uiState.isRingLightEnabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(
+                        width = 28.dp,
+                        color = Color(0xFFFFF8E7).copy(alpha = 0.92f),
+                        shape = RoundedCornerShape(36.dp)
+                    )
+            )
+        }
 
         Column(
             modifier = Modifier
@@ -390,10 +607,20 @@ fun CameraScreen(
                 } else {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = Color.Black.copy(alpha = 0.5f)
+                        color = Color.Black.copy(alpha = 0.55f)
                     ) {
+                        val modeLabel = buildString {
+                            append(if (uiState.isMirroredOnScreen) "Mirror View" else "True View")
+                            if (uiState.isFaceAutoZoomEnabled) {
+                                if (uiState.detectedFaceNormalizedBounds != null) {
+                                    append(" | Face Zoom")
+                                } else {
+                                    append(" | Finding Face")
+                                }
+                            }
+                        }
                         Text(
-                            text = if (uiState.isMirroredOnScreen) "Mirror View" else "True View",
+                            text = modeLabel,
                             color = Color.White,
                             style = MaterialTheme.typography.labelMedium,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
@@ -405,6 +632,42 @@ fun CameraScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    FilledTonalIconButton(
+                        onClick = { viewModel.toggleFaceAutoZoom() },
+                        enabled = !uiState.isCapturingPhoto,
+                        colors = if (uiState.isFaceAutoZoomEnabled) {
+                            IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            IconButtonDefaults.filledTonalIconButtonColors()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Face,
+                            contentDescription = "Face Auto Zoom"
+                        )
+                    }
+
+                    FilledTonalIconButton(
+                        onClick = { viewModel.toggleRingLight() },
+                        enabled = !uiState.isCapturingPhoto,
+                        colors = if (uiState.isRingLightEnabled) {
+                            IconButtonDefaults.filledIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        } else {
+                            IconButtonDefaults.filledTonalIconButtonColors()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LightMode,
+                            contentDescription = "Ring Light"
+                        )
+                    }
+
                     if (uiState.hasExposureControl) {
                         FilledTonalIconButton(
                             onClick = { viewModel.toggleExposureSlider() },
@@ -420,7 +683,7 @@ fun CameraScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Brightness6,
-                                contentDescription = "Brightness"
+                                contentDescription = "Exposure Brightness"
                             )
                         }
                     }
@@ -441,13 +704,13 @@ fun CameraScreen(
                 Spacer(modifier = Modifier.height(10.dp))
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -456,7 +719,7 @@ fun CameraScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Slider(
                             value = uiState.exposureIndex.toFloat(),
                             onValueChange = { value ->
@@ -465,15 +728,25 @@ fun CameraScreen(
                             valueRange = uiState.minExposureIndex.toFloat()..uiState.maxExposureIndex.toFloat(),
                             modifier = Modifier.weight(1f)
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         val sign = if (uiState.exposureIndex > 0) "+" else ""
                         Text(
                             text = "$sign${uiState.exposureIndex}",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.width(32.dp),
+                            modifier = Modifier.width(28.dp),
                             textAlign = TextAlign.End
                         )
+                        TextButton(
+                            onClick = {
+                                viewModel.setExposureIndex(0)
+                                activeCamera?.let { cam ->
+                                    triggerCenterAutoExposure(cam)
+                                }
+                            }
+                        ) {
+                            Text(text = "Auto")
+                        }
                     }
                 }
             }
@@ -531,6 +804,13 @@ fun CameraScreen(
                     val capture = imageCapture ?: return@FilledIconButton
                     if (uiState.isRecording || uiState.isCapturingPhoto) return@FilledIconButton
                     val mirrorOutput = uiState.isMirroredOnScreen
+                    val activeZoomForCapture = if (uiState.isFaceAutoZoomEnabled) smoothedZoom else 1f
+                    val centerXForCapture = if (uiState.isFlipped) {
+                        1f - smoothedCenterX
+                    } else {
+                        smoothedCenterX
+                    }
+                    val centerYForCapture = smoothedCenterY
                     viewModel.setCapturingPhoto(true)
                     capture.takePicture(
                         ContextCompat.getMainExecutor(context),
@@ -543,6 +823,9 @@ fun CameraScreen(
                                         sourceBitmap = rawBitmap,
                                         rotationDegrees = rotation,
                                         mirrorHorizontally = mirrorOutput,
+                                        cropZoomFactor = activeZoomForCapture,
+                                        cropCenterX = centerXForCapture,
+                                        cropCenterY = centerYForCapture,
                                         onComplete = onNavigateToPhotoPreview
                                     )
                                 } catch (_: Exception) {
@@ -590,7 +873,17 @@ fun CameraScreen(
                                 val cameraSelector = CameraSelector.Builder()
                                     .requireLensFacing(uiState.lensFacing)
                                     .build()
-                                val previewUseCase = buildPreviewUseCase(previewView)
+                                val matchingCameraInfo = runCatching {
+                                    cameraSelector.filter(cameraProvider.availableCameraInfos).firstOrNull()
+                                }.getOrNull()
+                                val previewUseCase = buildPreviewUseCase(
+                                    previewView = previewView,
+                                    cameraInfo = matchingCameraInfo,
+                                    lensFacing = uiState.lensFacing,
+                                    onFaceDetected = { normalizedRect ->
+                                        viewModel.updateDetectedFace(normalizedRect)
+                                    }
+                                )
                                 val configuredVideoCapture = buildVideoCaptureUseCase(
                                     uiState.effectiveVideoQuality.cameraQuality
                                 )
@@ -783,16 +1076,134 @@ private fun startVideoRecording(
     onRecordingCreated(recording)
 }
 
-private fun buildPreviewUseCase(previewView: PreviewView): Preview {
+@OptIn(ExperimentalCamera2Interop::class)
+private fun buildPreviewUseCase(
+    previewView: PreviewView,
+    cameraInfo: androidx.camera.core.CameraInfo?,
+    lensFacing: Int,
+    onFaceDetected: (RectF?) -> Unit
+): Preview {
     val resolutionSelector = ResolutionSelector.Builder()
         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
         .build()
-    return Preview.Builder()
+    val builder = Preview.Builder()
         .setResolutionSelector(resolutionSelector)
-        .build()
-        .also {
-            it.surfaceProvider = previewView.surfaceProvider
+
+    if (cameraInfo != null) {
+        runCatching {
+            val camera2Info = Camera2CameraInfo.from(cameraInfo)
+            val activeArray = camera2Info.getCameraCharacteristic(
+                CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE
+            )
+            val sensorOrientation = camera2Info.getCameraCharacteristic(
+                CameraCharacteristics.SENSOR_ORIENTATION
+            ) ?: 90
+            val availableFaceModes = camera2Info.getCameraCharacteristic(
+                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
+            )
+            val preferredFaceMode = availableFaceModes?.maxOrNull()
+                ?: CameraCharacteristics.STATISTICS_INFO_FACE_DETECT_MODE_OFF
+
+            if (activeArray != null &&
+                preferredFaceMode > CameraCharacteristics.STATISTICS_INFO_FACE_DETECT_MODE_OFF
+            ) {
+                val extender = Camera2Interop.Extender(builder)
+                extender.setCaptureRequestOption(
+                    CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                    preferredFaceMode
+                )
+                extender.setSessionCaptureCallback(
+                    object : CameraCaptureSession.CaptureCallback() {
+                        private var lastWithoutFaceTime = 0L
+
+                        override fun onCaptureCompleted(
+                            session: CameraCaptureSession,
+                            request: CaptureRequest,
+                            result: TotalCaptureResult
+                        ) {
+                            val faces = result.get(CaptureResult.STATISTICS_FACES)
+                            val primaryFace = faces?.maxByOrNull {
+                                it.bounds.width().toLong() * it.bounds.height().toLong()
+                            }
+                            if (primaryFace != null) {
+                                lastWithoutFaceTime = 0L
+                                val cropRegion = result.get(CaptureResult.SCALER_CROP_REGION) ?: activeArray
+                                val mapped = mapSensorFaceBoundsToPortraitNormalized(
+                                    faceBounds = primaryFace.bounds,
+                                    referenceArray = cropRegion,
+                                    sensorOrientation = sensorOrientation,
+                                    isFrontCamera = lensFacing == CameraSelector.LENS_FACING_FRONT
+                                )
+                                onFaceDetected(mapped)
+                            } else {
+                                val now = SystemClock.elapsedRealtime()
+                                if (lastWithoutFaceTime == 0L) {
+                                    lastWithoutFaceTime = now
+                                } else if (now - lastWithoutFaceTime > 700L) {
+                                    onFaceDetected(null)
+                                }
+                            }
+                        }
+                    }
+                )
+            }
         }
+    }
+
+    return builder.build().also {
+        it.surfaceProvider = previewView.surfaceProvider
+    }
+}
+
+private fun mapSensorFaceBoundsToPortraitNormalized(
+    faceBounds: Rect,
+    referenceArray: Rect,
+    sensorOrientation: Int,
+    isFrontCamera: Boolean
+): RectF? {
+    val refW = referenceArray.width().toFloat()
+    val refH = referenceArray.height().toFloat()
+    if (refW <= 0f || refH <= 0f) return null
+
+    val sx = ((faceBounds.exactCenterX() - referenceArray.left) / refW).coerceIn(0f, 1f)
+    val sy = ((faceBounds.exactCenterY() - referenceArray.top) / refH).coerceIn(0f, 1f)
+    val sw = (faceBounds.width().toFloat() / refW).coerceIn(0.05f, 1f)
+    val sh = (faceBounds.height().toFloat() / refH).coerceIn(0.05f, 1f)
+
+    val (cx, cy, w, h) = when (sensorOrientation) {
+        270 -> {
+            val rawX = sy
+            val normX = if (isFrontCamera) rawX else 1f - rawX
+            val normY = 1f - sx
+            floatArrayOf(normX, normY, sh, sw)
+        }
+        90 -> {
+            val rawX = 1f - sy
+            val normX = if (isFrontCamera) 1f - rawX else rawX
+            val normY = sx
+            floatArrayOf(normX, normY, sh, sw)
+        }
+        180 -> {
+            val rawX = 1f - sx
+            val normX = if (isFrontCamera) 1f - rawX else rawX
+            val normY = 1f - sy
+            floatArrayOf(normX, normY, sw, sh)
+        }
+        else -> {
+            val normX = if (isFrontCamera) 1f - sx else sx
+            val normY = sy
+            floatArrayOf(normX, normY, sw, sh)
+        }
+    }
+
+    val halfW = w * 0.5f
+    val halfH = h * 0.5f
+    return RectF(
+        (cx - halfW).coerceIn(0f, 1f),
+        (cy - halfH).coerceIn(0f, 1f),
+        (cx + halfW).coerceIn(0f, 1f),
+        (cy + halfH).coerceIn(0f, 1f)
+    )
 }
 
 private fun buildImageCaptureUseCase(targetSize: Size?): ImageCapture {
@@ -859,6 +1270,8 @@ private fun configureCameraZoomAndExposure(
         viewModel.updateExposureRange(min = 0, max = 0, current = 0)
     }
 
+    triggerCenterAutoExposure(camera)
+
     runCatching {
         val camera2Info = Camera2CameraInfo.from(camera.cameraInfo)
         val fpsRanges = camera2Info.getCameraCharacteristic(
@@ -875,9 +1288,33 @@ private fun configureCameraZoomAndExposure(
                     CaptureRequest.CONTROL_AE_MODE,
                     CaptureRequest.CONTROL_AE_MODE_ON
                 )
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AWB_MODE,
+                    CaptureRequest.CONTROL_AWB_MODE_AUTO
+                )
                 .build()
             Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
         }
+    }
+}
+
+private fun triggerCenterAutoExposure(camera: Camera) {
+    runCatching {
+        val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+        val centerPoint = factory.createPoint(0.5f, 0.5f)
+        val action = FocusMeteringAction.Builder(
+            centerPoint,
+            FocusMeteringAction.FLAG_AE or
+                FocusMeteringAction.FLAG_AF or
+                FocusMeteringAction.FLAG_AWB
+        )
+            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+            .build()
+        camera.cameraControl.startFocusAndMetering(action)
     }
 }
 
@@ -899,8 +1336,8 @@ private fun selectDefaultBinnedPhotoSize(photoSizes: List<Size>): Size? {
     val preferredFourByThree = photoSizes.firstOrNull { size ->
         val area = size.width.toLong() * size.height.toLong()
         val ratio = size.width.toDouble() / size.height.toDouble()
-        val isFourByThree = kotlin.math.abs(ratio - (4.0 / 3.0)) < 0.06 ||
-            kotlin.math.abs(ratio - (3.0 / 4.0)) < 0.06
+        val isFourByThree = abs(ratio - (4.0 / 3.0)) < 0.06 ||
+            abs(ratio - (3.0 / 4.0)) < 0.06
         isFourByThree && area <= 13_000_000L
     }
     val preferredBinned = photoSizes.firstOrNull { size ->
@@ -931,6 +1368,14 @@ private suspend fun getCameraProvider(context: Context): ProcessCameraProvider {
             },
             ContextCompat.getMainExecutor(context)
         )
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
     }
 }
 

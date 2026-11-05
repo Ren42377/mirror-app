@@ -1,5 +1,6 @@
 package com.ren42377.mirror.ui
 
+import android.graphics.RectF
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import com.ren42377.mirror.model.AppSettings
@@ -24,7 +25,10 @@ data class MirrorUiState(
     val exposureIndex: Int = 0,
     val minExposureIndex: Int = 0,
     val maxExposureIndex: Int = 0,
-    val isExposureSliderVisible: Boolean = false
+    val isExposureSliderVisible: Boolean = false,
+    val isRingLightEnabled: Boolean = false,
+    val isFaceAutoZoomEnabled: Boolean = false,
+    val detectedFaceNormalizedBounds: RectF? = null
 ) {
     val isMirroredOnScreen: Boolean
         get() = if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
