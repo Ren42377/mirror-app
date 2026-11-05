@@ -62,7 +62,7 @@ class FaceZoomTracker {
         right: Int,
         bottom: Int,
         maxZoom: Float,
-        canPan: Boolean
+        canPan: Boolean = true
     ) {
         val width = right - left
         val height = bottom - top

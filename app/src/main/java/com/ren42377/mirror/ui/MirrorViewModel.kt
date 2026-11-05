@@ -14,6 +14,7 @@ import com.ren42377.mirror.model.AppSettings
 import com.ren42377.mirror.model.CaptureResult
 import com.ren42377.mirror.model.VideoQualityOption
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -236,11 +237,21 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         sourceBitmap: Bitmap,
         rotationDegrees: Int,
         mirrorHorizontally: Boolean,
+        cropZoom: Float = 1f,
+        cropCenterX: Float = 0.5f,
+        cropCenterY: Float = 0.5f,
         onComplete: () -> Unit
     ) {
         viewModelScope.launch {
             val transformed = withContext(Dispatchers.Default) {
-                transformBitmap(sourceBitmap, rotationDegrees, mirrorHorizontally)
+                transformBitmap(
+                    source = sourceBitmap,
+                    rotationDegrees = rotationDegrees,
+                    mirrorHorizontally = mirrorHorizontally,
+                    cropZoom = cropZoom,
+                    cropCenterX = cropCenterX,
+                    cropCenterY = cropCenterY
+                )
             }
             clearCaptureResult()
             _captureResult.value = CaptureResult.Photo(transformed)
@@ -314,7 +325,10 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         fun transformBitmap(
             source: Bitmap,
             rotationDegrees: Int,
-            mirrorHorizontally: Boolean
+            mirrorHorizontally: Boolean,
+            cropZoom: Float = 1f,
+            cropCenterX: Float = 0.5f,
+            cropCenterY: Float = 0.5f
         ): Bitmap {
             val matrix = Matrix()
             if (rotationDegrees != 0) {
@@ -323,22 +337,37 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
             if (mirrorHorizontally) {
                 matrix.postScale(-1f, 1f)
             }
-            if (rotationDegrees == 0 && !mirrorHorizontally) {
-                return source
+            val oriented = if (rotationDegrees == 0 && !mirrorHorizontally) {
+                source
+            } else {
+                Bitmap.createBitmap(
+                    source,
+                    0,
+                    0,
+                    source.width,
+                    source.height,
+                    matrix,
+                    true
+                ).also { created ->
+                    if (created !== source) {
+                        source.recycle()
+                    }
+                }
             }
-            val result = Bitmap.createBitmap(
-                source,
-                0,
-                0,
-                source.width,
-                source.height,
-                matrix,
-                true
-            )
-            if (result !== source) {
-                source.recycle()
+            if (cropZoom <= 1.01f) {
+                return oriented
             }
-            return result
+            val cropWidth = (oriented.width / cropZoom).roundToInt().coerceIn(1, oriented.width)
+            val cropHeight = (oriented.height / cropZoom).roundToInt().coerceIn(1, oriented.height)
+            val cx = cropCenterX.coerceIn(0f, 1f) * oriented.width
+            val cy = cropCenterY.coerceIn(0f, 1f) * oriented.height
+            val cropLeft = (cx - cropWidth * 0.5f).roundToInt().coerceIn(0, oriented.width - cropWidth)
+            val cropTop = (cy - cropHeight * 0.5f).roundToInt().coerceIn(0, oriented.height - cropHeight)
+            val cropped = Bitmap.createBitmap(oriented, cropLeft, cropTop, cropWidth, cropHeight)
+            if (cropped !== oriented) {
+                oriented.recycle()
+            }
+            return cropped
         }
     }
 }

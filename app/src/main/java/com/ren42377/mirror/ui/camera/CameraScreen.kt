@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
@@ -92,6 +91,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -126,6 +126,8 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -246,6 +248,9 @@ fun CameraScreen(
     var cameraCapabilities by remember { mutableStateOf(CameraCapabilities.EMPTY) }
     val faceZoomTracker = remember { FaceZoomTracker() }
     val optionsController = remember { CameraOptionsController() }
+    var faceZoomFactor by remember { mutableFloatStateOf(1f) }
+    var facePanNormX by remember { mutableFloatStateOf(0.5f) }
+    var facePanNormY by remember { mutableFloatStateOf(0.5f) }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -268,13 +273,24 @@ fun CameraScreen(
     LaunchedEffect(
         activeCamera,
         cameraCapabilities,
-        uiState.isFaceAutoZoomEnabled
+        uiState.isFaceAutoZoomEnabled,
+        uiState.lensFacing
     ) {
         val camera = activeCamera ?: return@LaunchedEffect
         val capabilities = cameraCapabilities
         val activeArray = capabilities.activeArray
         if (!uiState.isFaceAutoZoomEnabled || !capabilities.isFaceTrackingSupported || activeArray == null) {
             faceZoomTracker.reset()
+            faceZoomFactor = 1f
+            facePanNormX = 0.5f
+            facePanNormY = 0.5f
+            applyPreviewTransform(
+                view = previewView,
+                isFlipped = uiState.isFlipped,
+                zoom = 1f,
+                previewNormX = 0.5f,
+                previewNormY = 0.5f
+            )
             optionsController.faceDetectMode = CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
             optionsController.cropRegion = null
             optionsController.apply()
@@ -288,8 +304,9 @@ fun CameraScreen(
             )
         }
         optionsController.faceDetectMode = capabilities.faceDetectMode
+        optionsController.cropRegion = null
+        optionsController.apply()
 
-        var lastAppliedRegion: Rect? = null
         var lastFaceVisible = false
         var lastMeterX = Float.NaN
         var lastMeterY = Float.NaN
@@ -297,12 +314,28 @@ fun CameraScreen(
             val now = SystemClock.elapsedRealtime()
             val window = faceZoomTracker.step(now)
             if (window != null) {
-                val region = Rect(window.left, window.top, window.right, window.bottom)
-                if (region != lastAppliedRegion) {
-                    lastAppliedRegion = region
-                    optionsController.cropRegion = region
-                    optionsController.apply()
-                }
+                val cropCenter = sensorPointToDisplayNormalized(
+                    x = (window.left + window.right) * 0.5f,
+                    y = (window.top + window.bottom) * 0.5f,
+                    arrayLeft = activeArray.left,
+                    arrayTop = activeArray.top,
+                    arrayWidth = activeArray.width(),
+                    arrayHeight = activeArray.height(),
+                    sensorOrientation = capabilities.sensorOrientation
+                )
+                val isFrontCamera = uiState.lensFacing == CameraSelector.LENS_FACING_FRONT
+                val normX = if (isFrontCamera) 1f - cropCenter.x else cropCenter.x
+                val normY = cropCenter.y
+                faceZoomFactor = window.zoom
+                facePanNormX = normX
+                facePanNormY = normY
+                applyPreviewTransform(
+                    view = previewView,
+                    isFlipped = uiState.isFlipped,
+                    zoom = window.zoom,
+                    previewNormX = normX,
+                    previewNormY = normY
+                )
                 if (window.faceVisible != lastFaceVisible) {
                     lastFaceVisible = window.faceVisible
                     viewModel.setFaceDetected(window.faceVisible)
@@ -543,7 +576,13 @@ fun CameraScreen(
             factory = { previewView },
             modifier = Modifier.fillMaxSize(),
             update = { view ->
-                view.scaleX = if (uiState.isFlipped) -1f else 1f
+                applyPreviewTransform(
+                    view = view,
+                    isFlipped = uiState.isFlipped,
+                    zoom = faceZoomFactor,
+                    previewNormX = facePanNormX,
+                    previewNormY = facePanNormY
+                )
             }
         )
 
@@ -811,6 +850,9 @@ fun CameraScreen(
                     val capture = imageCapture ?: return@FilledIconButton
                     if (uiState.isRecording || uiState.isCapturingPhoto) return@FilledIconButton
                     val mirrorOutput = uiState.isMirroredOnScreen
+                    val captureZoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
+                    val captureCenterX = if (uiState.isFlipped) 1f - facePanNormX else facePanNormX
+                    val captureCenterY = facePanNormY
                     viewModel.setCapturingPhoto(true)
                     capture.takePicture(
                         ContextCompat.getMainExecutor(context),
@@ -823,6 +865,9 @@ fun CameraScreen(
                                         sourceBitmap = rawBitmap,
                                         rotationDegrees = rotation,
                                         mirrorHorizontally = mirrorOutput,
+                                        cropZoom = captureZoom,
+                                        cropCenterX = captureCenterX,
+                                        cropCenterY = captureCenterY,
                                         onComplete = onNavigateToPhotoPreview
                                     )
                                 } catch (_: Exception) {
@@ -1113,10 +1158,39 @@ private data class RecordingSetup(
     val stabilization: Boolean
 )
 
-private const val FACE_ZOOM_STEP_MS = 33L
+private const val FACE_ZOOM_STEP_MS = 16L
 private const val FACE_METER_INTERVAL_MS = 2500L
 private const val FACE_METER_MOVE_THRESHOLD = 0.1f
 private const val MIN_FACE_SCORE = 25
+
+private fun applyPreviewTransform(
+    view: PreviewView,
+    isFlipped: Boolean,
+    zoom: Float,
+    previewNormX: Float,
+    previewNormY: Float
+) {
+    val flipSign = if (isFlipped) -1f else 1f
+    val activeZoom = zoom.coerceIn(1f, FaceZoomTracker.MAX_FACE_ZOOM)
+    view.scaleX = flipSign * activeZoom
+    view.scaleY = activeZoom
+
+    val viewWidth = view.width.toFloat()
+    val viewHeight = view.height.toFloat()
+    if (viewWidth > 0f && viewHeight > 0f && activeZoom > 1.001f) {
+        val contentWidth = min(viewWidth, viewHeight * 0.75f)
+        val contentHeight = min(viewHeight, viewWidth * (4f / 3f))
+        val maxTx = (activeZoom - 1f) * contentWidth * 0.5f
+        val maxTy = (activeZoom - 1f) * contentHeight * 0.5f
+        val desiredTx = (0.5f - previewNormX) * contentWidth * view.scaleX
+        val desiredTy = (0.5f - previewNormY) * contentHeight * activeZoom
+        view.translationX = desiredTx.coerceIn(-maxTx, maxTx)
+        view.translationY = desiredTy.coerceIn(-maxTy, maxTy)
+    } else {
+        view.translationX = 0f
+        view.translationY = 0f
+    }
+}
 
 private fun configureFaceZoomTracker(tracker: FaceZoomTracker, capabilities: CameraCapabilities) {
     val activeArray = capabilities.activeArray
@@ -1129,8 +1203,8 @@ private fun configureFaceZoomTracker(tracker: FaceZoomTracker, capabilities: Cam
         top = activeArray.top,
         right = activeArray.right,
         bottom = activeArray.bottom,
-        maxZoom = capabilities.maxDigitalZoom,
-        canPan = capabilities.isFreeformCropSupported
+        maxZoom = max(capabilities.maxDigitalZoom, FaceZoomTracker.MAX_FACE_ZOOM),
+        canPan = true
     )
 }
 
