@@ -108,4 +108,28 @@ class FaceZoomTrackerTest {
         assertEquals(0.75f, point.x, 0.001f)
         assertEquals(0.25f, point.y, 0.001f)
     }
+
+    @Test
+    fun userScaleLocksZoomWhileStillPanningTowardFace() {
+        val tracker = newTracker()
+        runSteps(tracker, 1000L, 2f, Triple(1000f, 1000f, 400f))
+        val autoZoomWindow = tracker.step(3100L)!!
+        assertTrue(autoZoomWindow.zoom > 3f)
+
+        val userZoom = tracker.onUserScale(0.5f)
+        assertEquals(autoZoomWindow.zoom * 0.5f, userZoom, 0.001f)
+
+        // Face moves to the bottom-right and changes size; zoom stays locked while window pans
+        runSteps(tracker, 3200L, 2f, Triple(3200f, 2200f, 300f))
+        val pannedWindow = tracker.step(5300L)!!
+        assertEquals(userZoom, pannedWindow.zoom, 0.001f)
+        val centerX = (pannedWindow.left + pannedWindow.right) / 2f
+        val centerY = (pannedWindow.top + pannedWindow.bottom) / 2f
+        assertTrue("centerX was $centerX", centerX > 2500f)
+        assertTrue("centerY was $centerY", centerY > 1800f)
+
+        // Reset clears manual zoom lock
+        tracker.reset()
+        assertEquals(1f, tracker.step(6000L)!!.zoom, 0.001f)
+    }
 }

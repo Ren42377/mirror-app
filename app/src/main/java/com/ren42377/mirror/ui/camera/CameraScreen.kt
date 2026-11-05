@@ -389,12 +389,27 @@ fun CameraScreen(
         }
     }
 
+    LaunchedEffect(uiState.lensFacing) {
+        faceZoomTracker.reset()
+    }
+
     DisposableEffect(previewView) {
         val scaleGestureDetector = ScaleGestureDetector(
             context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    if (uiState.isFaceAutoZoomEnabled) return false
+                    if (uiState.isFaceAutoZoomEnabled) {
+                        val updatedZoom = faceZoomTracker.onUserScale(detector.scaleFactor)
+                        faceZoomFactor = updatedZoom
+                        applyPreviewTransform(
+                            view = previewView,
+                            isFlipped = uiState.isFlipped,
+                            zoom = updatedZoom,
+                            previewNormX = facePanNormX,
+                            previewNormY = facePanNormY
+                        )
+                        return true
+                    }
                     val camera = activeCamera ?: return false
                     val zoomState = camera.cameraInfo.zoomState.value ?: return false
                     val newRatio = (zoomState.zoomRatio * detector.scaleFactor)
@@ -428,7 +443,7 @@ fun CameraScreen(
         )
         previewView.setOnTouchListener { _, event ->
             scaleGestureDetector.onTouchEvent(event)
-            if (!scaleGestureDetector.isInProgress) {
+            if (!scaleGestureDetector.isInProgress && event.pointerCount == 1) {
                 tapGestureDetector.onTouchEvent(event)
             }
             true
