@@ -49,6 +49,7 @@ class FaceZoomTracker {
     private var targetCenterX = 0f
     private var targetCenterY = 0f
     private var hasTarget = false
+    private var userZoomOverride: Float? = null
 
     private var faceX = 0f
     private var faceY = 0f
@@ -62,7 +63,7 @@ class FaceZoomTracker {
         right: Int,
         bottom: Int,
         maxZoom: Float,
-        canPan: Boolean
+        canPan: Boolean = true
     ) {
         val width = right - left
         val height = bottom - top
@@ -92,6 +93,21 @@ class FaceZoomTracker {
     }
 
     /**
+     * Adjusts and locks the zoom factor in response to a user pinch gesture while
+     * keeping face panning active.
+     */
+    @Synchronized
+    fun onUserScale(scaleFactor: Float): Float {
+        if (!configured) return 1f
+        val baseZoom = userZoomOverride ?: zoom
+        val updated = (baseZoom * scaleFactor).coerceIn(1f, maxZoom)
+        userZoomOverride = updated
+        targetZoom = updated
+        zoom = updated
+        return updated
+    }
+
+    /**
      * Registers a detected face.
      *
      * @param centerX face center x in sensor coordinates
@@ -106,7 +122,8 @@ class FaceZoomTracker {
         faceY = centerY
 
         val shortSide = min(arrayWidth, arrayHeight).toFloat()
-        val desiredZoom = (TARGET_FACE_FRACTION * shortSide / max(faceSize, 1f))
+        val manualZoom = userZoomOverride
+        val desiredZoom = (manualZoom ?: (TARGET_FACE_FRACTION * shortSide / max(faceSize, 1f)))
             .coerceIn(1f, maxZoom)
 
         if (!hasTarget) {
@@ -116,7 +133,9 @@ class FaceZoomTracker {
             hasTarget = true
             return
         }
-        if (abs(desiredZoom - targetZoom) / targetZoom > ZOOM_DEAD_BAND) {
+        if (manualZoom != null) {
+            targetZoom = manualZoom
+        } else if (abs(desiredZoom - targetZoom) / targetZoom > ZOOM_DEAD_BAND) {
             targetZoom = desiredZoom
         }
         val windowWidth = arrayWidth / zoom
@@ -134,10 +153,11 @@ class FaceZoomTracker {
     fun step(nowMs: Long): CropWindow? {
         if (!configured) return null
 
+        val manualZoom = userZoomOverride
         val faceVisible = lastFaceTimeMs != NO_FACE && nowMs - lastFaceTimeMs <= FACE_LOST_TIMEOUT_MS
         if (!faceVisible) {
             hasTarget = false
-            targetZoom = 1f
+            targetZoom = manualZoom ?: 1f
             targetCenterX = arrayCenterX()
             targetCenterY = arrayCenterY()
         }
@@ -149,10 +169,15 @@ class FaceZoomTracker {
         }
         lastStepMs = nowMs
 
-        val zoomTau = if (targetZoom > zoom) ZOOM_IN_TAU else ZOOM_OUT_TAU
-        zoom += (targetZoom - zoom) * (1f - exp(-dt / zoomTau))
-        if (!faceVisible && abs(zoom - 1f) < 0.003f) zoom = 1f
-        zoom = zoom.coerceIn(1f, maxZoom)
+        if (manualZoom != null) {
+            targetZoom = manualZoom
+            zoom = manualZoom.coerceIn(1f, maxZoom)
+        } else {
+            val zoomTau = if (targetZoom > zoom) ZOOM_IN_TAU else ZOOM_OUT_TAU
+            zoom += (targetZoom - zoom) * (1f - exp(-dt / zoomTau))
+            if (!faceVisible && abs(zoom - 1f) < 0.003f) zoom = 1f
+            zoom = zoom.coerceIn(1f, maxZoom)
+        }
 
         val panAlpha = 1f - exp(-dt / PAN_TAU)
         centerX += (targetCenterX - centerX) * panAlpha
@@ -191,22 +216,23 @@ class FaceZoomTracker {
         targetCenterX = centerX
         targetCenterY = centerY
         hasTarget = false
+        userZoomOverride = null
         lastFaceTimeMs = NO_FACE
         lastStepMs = 0L
     }
 
     companion object {
         /** Share of the visible short side that the face should fill. */
-        const val TARGET_FACE_FRACTION = 0.42f
-        const val MAX_FACE_ZOOM = 3f
+        const val TARGET_FACE_FRACTION = 0.72f
+        const val MAX_FACE_ZOOM = 5f
 
         private const val NO_FACE = Long.MIN_VALUE
-        private const val FACE_LOST_TIMEOUT_MS = 900L
+        private const val FACE_LOST_TIMEOUT_MS = 1500L
         private const val ZOOM_DEAD_BAND = 0.07f
         private const val PAN_DEAD_BAND = 0.03f
-        private const val ZOOM_IN_TAU = 0.30f
-        private const val ZOOM_OUT_TAU = 0.50f
-        private const val PAN_TAU = 0.16f
+        private const val ZOOM_IN_TAU = 0.12f
+        private const val ZOOM_OUT_TAU = 0.30f
+        private const val PAN_TAU = 0.08f
         private const val DEFAULT_STEP_SECONDS = 0.033f
 
         /** Approximate face edge length from a face rectangle. */
