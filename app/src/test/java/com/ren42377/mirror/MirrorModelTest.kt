@@ -2,6 +2,7 @@ package com.ren42377.mirror
 
 import androidx.camera.core.CameraSelector
 import com.ren42377.mirror.model.AppSettings
+import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorUiState
 import org.junit.Assert.assertEquals
@@ -51,7 +52,10 @@ class MirrorModelTest {
     @Test
     fun videoQualitySelectionFallsBackToFirstSupported() {
         val state = MirrorUiState(
-            supportedVideoQualities = listOf(VideoQualityOption.HD, VideoQualityOption.SD),
+            videoCapabilities = listOf(
+                VideoModeCapability(VideoQualityOption.HD, null, listOf(30)),
+                VideoModeCapability(VideoQualityOption.SD, null, listOf(30))
+            ),
             settings = AppSettings(videoQuality = "UHD")
         )
         assertEquals(VideoQualityOption.HD, state.effectiveVideoQuality)
@@ -77,6 +81,46 @@ class MirrorModelTest {
         val state = MirrorUiState()
         assertFalse(state.isRingLightEnabled)
         assertFalse(state.isFaceAutoZoomEnabled)
-        assertNull(state.detectedFaceNormalizedBounds)
+        assertFalse(state.isFaceDetected)
+    }
+
+    @Test
+    fun unsupportedFrameRateFallsBackToClosestLower() {
+        val state = MirrorUiState(
+            videoCapabilities = listOf(
+                VideoModeCapability(VideoQualityOption.UHD, null, listOf(24, 30)),
+                VideoModeCapability(VideoQualityOption.FHD, null, listOf(24, 30, 60))
+            ),
+            settings = AppSettings(videoQuality = "UHD", videoFrameRate = 60)
+        )
+        assertEquals(30, state.effectiveFrameRate)
+    }
+
+    @Test
+    fun supportedFrameRateIsKept() {
+        val state = MirrorUiState(
+            videoCapabilities = listOf(
+                VideoModeCapability(VideoQualityOption.FHD, null, listOf(30, 60))
+            ),
+            settings = AppSettings(videoQuality = "FHD", videoFrameRate = 60)
+        )
+        assertEquals(60, state.effectiveFrameRate)
+    }
+
+    @Test
+    fun stabilizationIsOnlyEffectiveWhenSupported() {
+        val unsupported = MirrorUiState(
+            settings = AppSettings(videoStabilization = true, opticalStabilization = true)
+        )
+        assertFalse(unsupported.effectiveVideoStabilization)
+        assertFalse(unsupported.effectiveOpticalStabilization)
+
+        val supported = MirrorUiState(
+            isVideoStabilizationSupported = true,
+            isOpticalStabilizationSupported = true,
+            settings = AppSettings(videoStabilization = true, opticalStabilization = true)
+        )
+        assertTrue(supported.effectiveVideoStabilization)
+        assertTrue(supported.effectiveOpticalStabilization)
     }
 }

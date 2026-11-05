@@ -4,7 +4,10 @@ import android.util.Size
 
 data class AppSettings(
     val photoResolution: String = "",
-    val videoQuality: String = "FHD"
+    val videoQuality: String = "FHD",
+    val videoFrameRate: Int = 30,
+    val videoStabilization: Boolean = false,
+    val opticalStabilization: Boolean = false
 ) {
     fun parsePhotoSize(): Size? {
         if (photoResolution.isBlank()) return null

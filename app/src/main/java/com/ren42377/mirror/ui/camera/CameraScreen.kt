@@ -7,11 +7,8 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.ImageFormat
 import android.graphics.Rect
-import android.graphics.RectF
 import android.hardware.camera2.CameraCaptureSession
-import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
@@ -28,10 +25,7 @@ import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
-import androidx.camera.camera2.interop.Camera2CameraControl
-import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
-import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -55,7 +49,6 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -99,7 +92,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -108,10 +100,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -124,8 +114,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ren42377.mirror.camera.CameraCapabilities
+import com.ren42377.mirror.camera.CameraOptionsController
+import com.ren42377.mirror.camera.FaceZoomTracker
+import com.ren42377.mirror.camera.FrameRatePlanner
+import com.ren42377.mirror.camera.queryCameraCapabilities
+import com.ren42377.mirror.camera.sensorPointToDisplayNormalized
 import com.ren42377.mirror.data.RecordingCacheManager
-import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorViewModel
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -248,9 +243,9 @@ fun CameraScreen(
     var tapFocusTimestamp by remember { mutableLongStateOf(0L) }
     var lastAutoMeterTimestamp by remember { mutableLongStateOf(0L) }
 
-    var smoothedZoom by remember { mutableFloatStateOf(1f) }
-    var smoothedCenterX by remember { mutableFloatStateOf(0.5f) }
-    var smoothedCenterY by remember { mutableFloatStateOf(0.5f) }
+    var cameraCapabilities by remember { mutableStateOf(CameraCapabilities.EMPTY) }
+    val faceZoomTracker = remember { FaceZoomTracker() }
+    val optionsController = remember { CameraOptionsController() }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -270,45 +265,74 @@ fun CameraScreen(
         }
     }
 
-    LaunchedEffect(uiState.isFaceAutoZoomEnabled, uiState.detectedFaceNormalizedBounds) {
-        while (true) {
-            val faceBounds = uiState.detectedFaceNormalizedBounds
-            if (uiState.isFaceAutoZoomEnabled && faceBounds != null) {
-                val faceHeight = faceBounds.height().coerceIn(0.08f, 0.85f)
-                val targetZoom = (0.42f / faceHeight).coerceIn(1.3f, 2.5f)
-                val targetX = faceBounds.centerX().coerceIn(0.15f, 0.85f)
-                val targetY = faceBounds.centerY().coerceIn(0.15f, 0.85f)
-                smoothedZoom += (targetZoom - smoothedZoom) * 0.14f
-                smoothedCenterX += (targetX - smoothedCenterX) * 0.14f
-                smoothedCenterY += (targetY - smoothedCenterY) * 0.14f
-            } else {
-                smoothedZoom += (1f - smoothedZoom) * 0.18f
-                smoothedCenterX += (0.5f - smoothedCenterX) * 0.18f
-                smoothedCenterY += (0.5f - smoothedCenterY) * 0.18f
-            }
-            delay(16L)
-        }
-    }
-
-    LaunchedEffect(activeCamera, uiState.detectedFaceNormalizedBounds) {
+    LaunchedEffect(
+        activeCamera,
+        cameraCapabilities,
+        uiState.isFaceAutoZoomEnabled
+    ) {
         val camera = activeCamera ?: return@LaunchedEffect
-        val faceBounds = uiState.detectedFaceNormalizedBounds ?: return@LaunchedEffect
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastAutoMeterTimestamp < 1200L) return@LaunchedEffect
-        lastAutoMeterTimestamp = now
-        runCatching {
-            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
-            val point = factory.createPoint(
-                faceBounds.centerX().coerceIn(0.1f, 0.9f),
-                faceBounds.centerY().coerceIn(0.1f, 0.9f)
+        val capabilities = cameraCapabilities
+        val activeArray = capabilities.activeArray
+        if (!uiState.isFaceAutoZoomEnabled || !capabilities.isFaceTrackingSupported || activeArray == null) {
+            faceZoomTracker.reset()
+            optionsController.faceDetectMode = CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
+            optionsController.cropRegion = null
+            optionsController.apply()
+            viewModel.setFaceDetected(false)
+            return@LaunchedEffect
+        }
+
+        camera.cameraInfo.zoomState.value?.let { zoomState ->
+            camera.cameraControl.setZoomRatio(
+                1f.coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
             )
-            val action = FocusMeteringAction.Builder(
-                point,
-                FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AF
-            )
-                .setAutoCancelDuration(3, TimeUnit.SECONDS)
-                .build()
-            camera.cameraControl.startFocusAndMetering(action)
+        }
+        optionsController.faceDetectMode = capabilities.faceDetectMode
+
+        var lastAppliedRegion: Rect? = null
+        var lastFaceVisible = false
+        var lastMeterX = Float.NaN
+        var lastMeterY = Float.NaN
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            val window = faceZoomTracker.step(now)
+            if (window != null) {
+                val region = Rect(window.left, window.top, window.right, window.bottom)
+                if (region != lastAppliedRegion) {
+                    lastAppliedRegion = region
+                    optionsController.cropRegion = region
+                    optionsController.apply()
+                }
+                if (window.faceVisible != lastFaceVisible) {
+                    lastFaceVisible = window.faceVisible
+                    viewModel.setFaceDetected(window.faceVisible)
+                    if (!window.faceVisible) {
+                        lastMeterX = Float.NaN
+                        lastMeterY = Float.NaN
+                    }
+                }
+                if (window.faceVisible && now - lastAutoMeterTimestamp > FACE_METER_INTERVAL_MS) {
+                    val point = sensorPointToDisplayNormalized(
+                        x = window.faceSensorX,
+                        y = window.faceSensorY,
+                        arrayLeft = activeArray.left,
+                        arrayTop = activeArray.top,
+                        arrayWidth = activeArray.width(),
+                        arrayHeight = activeArray.height(),
+                        sensorOrientation = capabilities.sensorOrientation
+                    )
+                    val moved = lastMeterX.isNaN() ||
+                        abs(point.x - lastMeterX) > FACE_METER_MOVE_THRESHOLD ||
+                        abs(point.y - lastMeterY) > FACE_METER_MOVE_THRESHOLD
+                    if (moved) {
+                        lastMeterX = point.x
+                        lastMeterY = point.y
+                        lastAutoMeterTimestamp = now
+                        meterAtNormalizedPoint(camera, point.x, point.y)
+                    }
+                }
+            }
+            delay(FACE_ZOOM_STEP_MS)
         }
     }
 
@@ -317,6 +341,7 @@ fun CameraScreen(
             context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
                 override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    if (uiState.isFaceAutoZoomEnabled) return false
                     val camera = activeCamera ?: return false
                     val zoomState = camera.cameraInfo.zoomState.value ?: return false
                     val newRatio = (zoomState.zoomRatio * detector.scaleFactor)
@@ -397,6 +422,12 @@ fun CameraScreen(
         }
     }
 
+    LaunchedEffect(activeCamera, uiState.effectiveOpticalStabilization) {
+        if (activeCamera == null) return@LaunchedEffect
+        optionsController.opticalStabilization = uiState.effectiveOpticalStabilization
+        optionsController.apply()
+    }
+
     LaunchedEffect(
         lifecycleOwner,
         uiState.lensFacing,
@@ -432,30 +463,25 @@ fun CameraScreen(
             cameraSelector.filter(cameraProvider.availableCameraInfos).firstOrNull()
         }.getOrNull()
 
-        val photoSizes = matchingCameraInfo?.let { querySupportedJpegSizes(it) }.orEmpty()
-        val videoQualities = matchingCameraInfo?.let { info ->
-            QualitySelector.getSupportedQualities(info)
-                .mapNotNull { VideoQualityOption.fromQuality(it) }
-        }.orEmpty()
-
+        val capabilities = matchingCameraInfo?.let { queryCameraCapabilities(it) }
+            ?: CameraCapabilities.EMPTY
+        cameraCapabilities = capabilities
         viewModel.updateActiveCameraCapabilities(
-            photoSizes = photoSizes,
-            videoQualities = videoQualities
+            capabilities = capabilities,
+            lensFacing = resolvedLensFacing
         )
+        configureFaceZoomTracker(faceZoomTracker, capabilities)
 
-        val targetPhotoSize = uiState.settings.parsePhotoSize()
-            ?.takeIf { photoSizes.contains(it) }
-            ?: selectDefaultBinnedPhotoSize(photoSizes)
+        val targetPhotoSize = viewModel.uiState.value.effectivePhotoSize
+        val isHighResolutionTarget = targetPhotoSize != null &&
+            capabilities.highResolutionPhotoSizes.contains(targetPhotoSize)
 
-        val previewUseCase = buildPreviewUseCase(
-            previewView = previewView,
-            cameraInfo = matchingCameraInfo,
-            lensFacing = resolvedLensFacing,
-            onFaceDetected = { normalizedRect ->
-                viewModel.updateDetectedFace(normalizedRect)
-            }
-        )
-        val configuredImageCapture = buildImageCaptureUseCase(targetPhotoSize)
+        optionsController.fpsRange = FrameRatePlanner.selectIdleRange(capabilities.aeFpsRanges)
+        optionsController.opticalStabilizationSupported = capabilities.isOpticalStabilizationSupported
+        optionsController.opticalStabilization = viewModel.uiState.value.effectiveOpticalStabilization
+
+        val previewUseCase = buildPreviewUseCase(previewView, faceZoomTracker)
+        val configuredImageCapture = buildImageCaptureUseCase(targetPhotoSize, isHighResolutionTarget)
 
         try {
             cameraProvider.unbindAll()
@@ -472,8 +498,16 @@ fun CameraScreen(
                 viewModel = viewModel,
                 targetExposureIndex = uiState.exposureIndex
             )
+            optionsController.attach(camera)
+
+            val deliveredSize = configuredImageCapture.resolutionInfo?.resolution
+            if (targetPhotoSize != null && deliveredSize != null && deliveredSize != targetPhotoSize) {
+                viewModel.markPhotoSizeUnsupported(resolvedLensFacing, targetPhotoSize)
+                rebindTrigger += 1
+            }
         } catch (_: Exception) {
             runCatching {
+                val fallbackPreview = buildPreviewUseCase(previewView, faceZoomTracker)
                 val fallbackImageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .build()
@@ -481,7 +515,7 @@ fun CameraScreen(
                 val camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     cameraSelector,
-                    previewUseCase,
+                    fallbackPreview,
                     fallbackImageCapture
                 )
                 activeCamera = camera
@@ -491,6 +525,11 @@ fun CameraScreen(
                     viewModel = viewModel,
                     targetExposureIndex = uiState.exposureIndex
                 )
+                optionsController.attach(camera)
+                if (targetPhotoSize != null) {
+                    viewModel.markPhotoSizeUnsupported(resolvedLensFacing, targetPhotoSize)
+                    rebindTrigger += 1
+                }
             }
         }
     }
@@ -504,41 +543,9 @@ fun CameraScreen(
             factory = { previewView },
             modifier = Modifier.fillMaxSize(),
             update = { view ->
-                val flipMultiplier = if (uiState.isFlipped) -1f else 1f
-                val activeZoom = smoothedZoom.coerceIn(1f, 2.6f)
-                view.scaleX = flipMultiplier * activeZoom
-                view.scaleY = activeZoom
-                val width = view.width.toFloat()
-                val height = view.height.toFloat()
-                if (width > 0f && height > 0f && activeZoom > 1.01f) {
-                    val maxTx = (activeZoom - 1f) * width * 0.5f
-                    val maxTy = (activeZoom - 1f) * height * 0.5f
-                    val desiredTx = (0.5f - smoothedCenterX) * width * activeZoom * flipMultiplier
-                    val desiredTy = (0.5f - smoothedCenterY) * height * activeZoom
-                    view.translationX = desiredTx.coerceIn(-maxTx, maxTx)
-                    view.translationY = desiredTy.coerceIn(-maxTy, maxTy)
-                } else {
-                    view.translationX = 0f
-                    view.translationY = 0f
-                }
+                view.scaleX = if (uiState.isFlipped) -1f else 1f
             }
         )
-
-        if (uiState.isFaceAutoZoomEnabled && uiState.detectedFaceNormalizedBounds != null) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val boxWidth = size.width * 0.48f
-                val boxHeight = boxWidth * 1.25f
-                val left = (size.width - boxWidth) / 2f
-                val top = (size.height - boxHeight) / 2f
-                drawRoundRect(
-                    color = Color(0xFF80D8FF).copy(alpha = 0.65f),
-                    topLeft = Offset(left, top),
-                    size = androidx.compose.ui.geometry.Size(boxWidth, boxHeight),
-                    cornerRadius = CornerRadius(24.dp.toPx(), 24.dp.toPx()),
-                    style = Stroke(width = 2.dp.toPx())
-                )
-            }
-        }
 
         val currentTapFocus = tapFocusOffset
         if (currentTapFocus != null) {
@@ -612,7 +619,7 @@ fun CameraScreen(
                         val modeLabel = buildString {
                             append(if (uiState.isMirroredOnScreen) "Mirror View" else "True View")
                             if (uiState.isFaceAutoZoomEnabled) {
-                                if (uiState.detectedFaceNormalizedBounds != null) {
+                                if (uiState.isFaceDetected) {
                                     append(" | Face Zoom")
                                 } else {
                                     append(" | Finding Face")
@@ -634,7 +641,7 @@ fun CameraScreen(
                 ) {
                     FilledTonalIconButton(
                         onClick = { viewModel.toggleFaceAutoZoom() },
-                        enabled = !uiState.isCapturingPhoto,
+                        enabled = !uiState.isCapturingPhoto && uiState.isFaceTrackingSupported,
                         colors = if (uiState.isFaceAutoZoomEnabled) {
                             IconButtonDefaults.filledIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.primary,
@@ -804,13 +811,6 @@ fun CameraScreen(
                     val capture = imageCapture ?: return@FilledIconButton
                     if (uiState.isRecording || uiState.isCapturingPhoto) return@FilledIconButton
                     val mirrorOutput = uiState.isMirroredOnScreen
-                    val activeZoomForCapture = if (uiState.isFaceAutoZoomEnabled) smoothedZoom else 1f
-                    val centerXForCapture = if (uiState.isFlipped) {
-                        1f - smoothedCenterX
-                    } else {
-                        smoothedCenterX
-                    }
-                    val centerYForCapture = smoothedCenterY
                     viewModel.setCapturingPhoto(true)
                     capture.takePicture(
                         ContextCompat.getMainExecutor(context),
@@ -823,9 +823,6 @@ fun CameraScreen(
                                         sourceBitmap = rawBitmap,
                                         rotationDegrees = rotation,
                                         mirrorHorizontally = mirrorOutput,
-                                        cropZoomFactor = activeZoomForCapture,
-                                        cropCenterX = centerXForCapture,
-                                        cropCenterY = centerYForCapture,
                                         onComplete = onNavigateToPhotoPreview
                                     )
                                 } catch (_: Exception) {
@@ -873,39 +870,64 @@ fun CameraScreen(
                                 val cameraSelector = CameraSelector.Builder()
                                     .requireLensFacing(uiState.lensFacing)
                                     .build()
-                                val matchingCameraInfo = runCatching {
-                                    cameraSelector.filter(cameraProvider.availableCameraInfos).firstOrNull()
-                                }.getOrNull()
-                                val previewUseCase = buildPreviewUseCase(
-                                    previewView = previewView,
-                                    cameraInfo = matchingCameraInfo,
-                                    lensFacing = uiState.lensFacing,
-                                    onFaceDetected = { normalizedRect ->
-                                        viewModel.updateDetectedFace(normalizedRect)
-                                    }
-                                )
-                                val configuredVideoCapture = buildVideoCaptureUseCase(
-                                    uiState.effectiveVideoQuality.cameraQuality
-                                )
+                                val capabilities = cameraCapabilities
+                                val requestedFrameRate = uiState.effectiveFrameRate
+                                val requestedStabilization = uiState.effectiveVideoStabilization
                                 val currentZoomRatio = activeCamera?.cameraInfo?.zoomState?.value?.zoomRatio
+                                val attempts = listOf(
+                                    RecordingSetup(requestedFrameRate, requestedStabilization),
+                                    RecordingSetup(null, false)
+                                )
+
+                                var recordingCamera: Camera? = null
+                                var recordingUseCase: VideoCapture<Recorder>? = null
+                                for (setup in attempts) {
+                                    val previewUseCase = buildPreviewUseCase(previewView, faceZoomTracker)
+                                    val videoUseCase = buildVideoCaptureUseCase(
+                                        quality = uiState.effectiveVideoQuality.cameraQuality,
+                                        frameRate = setup.frameRate,
+                                        stabilization = setup.stabilization
+                                    )
+                                    try {
+                                        cameraProvider.unbindAll()
+                                        val camera = cameraProvider.bindToLifecycle(
+                                            lifecycleOwner,
+                                            cameraSelector,
+                                            previewUseCase,
+                                            videoUseCase
+                                        )
+                                        recordingCamera = camera
+                                        recordingUseCase = videoUseCase
+                                        activeCamera = camera
+                                        configureCameraZoomAndExposure(
+                                            camera = camera,
+                                            viewModel = viewModel,
+                                            targetExposureIndex = uiState.exposureIndex,
+                                            preserveZoomRatio = currentZoomRatio
+                                        )
+                                        optionsController.fpsRange = setup.frameRate
+                                            ?.let { FrameRatePlanner.selectAeRange(capabilities.aeFpsRanges, it) }
+                                            ?: FrameRatePlanner.selectIdleRange(capabilities.aeFpsRanges)
+                                        optionsController.attach(camera)
+                                        break
+                                    } catch (_: Exception) {
+                                        recordingCamera = null
+                                        recordingUseCase = null
+                                    }
+                                }
+
+                                val boundVideoCapture = recordingUseCase
+                                if (recordingCamera == null || boundVideoCapture == null) {
+                                    activeRecording = null
+                                    viewModel.onRecordingStopped()
+                                    rebindTrigger += 1
+                                    return@launch
+                                }
+
                                 try {
-                                    cameraProvider.unbindAll()
-                                    val camera = cameraProvider.bindToLifecycle(
-                                        lifecycleOwner,
-                                        cameraSelector,
-                                        previewUseCase,
-                                        configuredVideoCapture
-                                    )
-                                    activeCamera = camera
-                                    configureCameraZoomAndExposure(
-                                        camera = camera,
-                                        viewModel = viewModel,
-                                        targetExposureIndex = uiState.exposureIndex,
-                                        preserveZoomRatio = currentZoomRatio
-                                    )
                                     startVideoRecording(
                                         context = context,
-                                        videoCapture = configuredVideoCapture,
+                                        videoCapture = boundVideoCapture,
                                         mirrorOutput = uiState.isMirroredOnScreen,
                                         viewModel = viewModel,
                                         onNavigateToVideoPreview = onNavigateToVideoPreview,
@@ -962,11 +984,21 @@ fun CameraScreen(
     if (uiState.isSettingsOpen) {
         SettingsSheet(
             supportedPhotoSizes = uiState.supportedPhotoSizes,
+            highResolutionPhotoSizes = uiState.highResolutionPhotoSizes,
             selectedPhotoSize = uiState.effectivePhotoSize,
-            supportedVideoQualities = uiState.supportedVideoQualities,
+            videoModes = uiState.videoCapabilities,
             selectedVideoQuality = uiState.effectiveVideoQuality,
+            selectedFrameRate = uiState.effectiveFrameRate,
+            frameRateOptions = uiState.supportedFrameRates,
+            isVideoStabilizationSupported = uiState.isVideoStabilizationSupported,
+            isVideoStabilizationEnabled = uiState.effectiveVideoStabilization,
+            isOpticalStabilizationSupported = uiState.isOpticalStabilizationSupported,
+            isOpticalStabilizationEnabled = uiState.effectiveOpticalStabilization,
             onSelectPhotoSize = { viewModel.selectPhotoResolution(it) },
             onSelectVideoQuality = { viewModel.selectVideoQuality(it) },
+            onSelectFrameRate = { viewModel.selectVideoFrameRate(it) },
+            onToggleVideoStabilization = { viewModel.setVideoStabilization(it) },
+            onToggleOpticalStabilization = { viewModel.setOpticalStabilization(it) },
             onDismiss = { viewModel.closeSettingsSheet() }
         )
     }
@@ -1076,12 +1108,36 @@ private fun startVideoRecording(
     onRecordingCreated(recording)
 }
 
+private data class RecordingSetup(
+    val frameRate: Int?,
+    val stabilization: Boolean
+)
+
+private const val FACE_ZOOM_STEP_MS = 33L
+private const val FACE_METER_INTERVAL_MS = 2500L
+private const val FACE_METER_MOVE_THRESHOLD = 0.1f
+private const val MIN_FACE_SCORE = 50
+
+private fun configureFaceZoomTracker(tracker: FaceZoomTracker, capabilities: CameraCapabilities) {
+    val activeArray = capabilities.activeArray
+    if (activeArray == null) {
+        tracker.configure(0, 0, 0, 0, 1f, false)
+        return
+    }
+    tracker.configure(
+        left = activeArray.left,
+        top = activeArray.top,
+        right = activeArray.right,
+        bottom = activeArray.bottom,
+        maxZoom = capabilities.maxDigitalZoom,
+        canPan = capabilities.isFreeformCropSupported
+    )
+}
+
 @OptIn(ExperimentalCamera2Interop::class)
 private fun buildPreviewUseCase(
     previewView: PreviewView,
-    cameraInfo: androidx.camera.core.CameraInfo?,
-    lensFacing: Int,
-    onFaceDetected: (RectF?) -> Unit
+    faceZoomTracker: FaceZoomTracker
 ): Preview {
     val resolutionSelector = ResolutionSelector.Builder()
         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
@@ -1089,124 +1145,36 @@ private fun buildPreviewUseCase(
     val builder = Preview.Builder()
         .setResolutionSelector(resolutionSelector)
 
-    if (cameraInfo != null) {
-        runCatching {
-            val camera2Info = Camera2CameraInfo.from(cameraInfo)
-            val activeArray = camera2Info.getCameraCharacteristic(
-                CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE
-            )
-            val sensorOrientation = camera2Info.getCameraCharacteristic(
-                CameraCharacteristics.SENSOR_ORIENTATION
-            ) ?: 90
-            val availableFaceModes = camera2Info.getCameraCharacteristic(
-                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
-            )
-            val preferredFaceMode = availableFaceModes?.maxOrNull()
-                ?: CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
-
-            if (activeArray != null &&
-                preferredFaceMode > CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
+    Camera2Interop.Extender(builder).setSessionCaptureCallback(
+        object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
             ) {
-                val extender = Camera2Interop.Extender(builder)
-                extender.setCaptureRequestOption(
-                    CaptureRequest.STATISTICS_FACE_DETECT_MODE,
-                    preferredFaceMode
-                )
-                extender.setSessionCaptureCallback(
-                    object : CameraCaptureSession.CaptureCallback() {
-                        private var lastWithoutFaceTime = 0L
-
-                        override fun onCaptureCompleted(
-                            session: CameraCaptureSession,
-                            request: CaptureRequest,
-                            result: TotalCaptureResult
-                        ) {
-                            val faces = result.get(CaptureResult.STATISTICS_FACES)
-                            val primaryFace = faces?.maxByOrNull {
-                                it.bounds.width().toLong() * it.bounds.height().toLong()
-                            }
-                            if (primaryFace != null) {
-                                lastWithoutFaceTime = 0L
-                                val cropRegion = result.get(CaptureResult.SCALER_CROP_REGION) ?: activeArray
-                                val mapped = mapSensorFaceBoundsToPortraitNormalized(
-                                    faceBounds = primaryFace.bounds,
-                                    referenceArray = cropRegion,
-                                    sensorOrientation = sensorOrientation,
-                                    isFrontCamera = lensFacing == CameraSelector.LENS_FACING_FRONT
-                                )
-                                onFaceDetected(mapped)
-                            } else {
-                                val now = SystemClock.elapsedRealtime()
-                                if (lastWithoutFaceTime == 0L) {
-                                    lastWithoutFaceTime = now
-                                } else if (now - lastWithoutFaceTime > 700L) {
-                                    onFaceDetected(null)
-                                }
-                            }
-                        }
-                    }
+                val faces = result.get(CaptureResult.STATISTICS_FACES)
+                if (faces.isNullOrEmpty()) return
+                val primaryFace = faces
+                    .filter { it.score >= MIN_FACE_SCORE }
+                    .maxByOrNull { it.bounds.width().toLong() * it.bounds.height().toLong() }
+                    ?: return
+                val bounds = primaryFace.bounds
+                faceZoomTracker.onFace(
+                    centerX = bounds.exactCenterX(),
+                    centerY = bounds.exactCenterY(),
+                    faceSize = FaceZoomTracker.faceSizeOf(bounds.width(), bounds.height()),
+                    nowMs = SystemClock.elapsedRealtime()
                 )
             }
         }
-    }
+    )
 
     return builder.build().also {
         it.surfaceProvider = previewView.surfaceProvider
     }
 }
 
-private fun mapSensorFaceBoundsToPortraitNormalized(
-    faceBounds: Rect,
-    referenceArray: Rect,
-    sensorOrientation: Int,
-    isFrontCamera: Boolean
-): RectF? {
-    val refW = referenceArray.width().toFloat()
-    val refH = referenceArray.height().toFloat()
-    if (refW <= 0f || refH <= 0f) return null
-
-    val sx = ((faceBounds.exactCenterX() - referenceArray.left) / refW).coerceIn(0f, 1f)
-    val sy = ((faceBounds.exactCenterY() - referenceArray.top) / refH).coerceIn(0f, 1f)
-    val sw = (faceBounds.width().toFloat() / refW).coerceIn(0.05f, 1f)
-    val sh = (faceBounds.height().toFloat() / refH).coerceIn(0.05f, 1f)
-
-    val (cx, cy, w, h) = when (sensorOrientation) {
-        270 -> {
-            val rawX = sy
-            val normX = if (isFrontCamera) rawX else 1f - rawX
-            val normY = 1f - sx
-            floatArrayOf(normX, normY, sh, sw)
-        }
-        90 -> {
-            val rawX = 1f - sy
-            val normX = if (isFrontCamera) 1f - rawX else rawX
-            val normY = sx
-            floatArrayOf(normX, normY, sh, sw)
-        }
-        180 -> {
-            val rawX = 1f - sx
-            val normX = if (isFrontCamera) 1f - rawX else rawX
-            val normY = 1f - sy
-            floatArrayOf(normX, normY, sw, sh)
-        }
-        else -> {
-            val normX = if (isFrontCamera) 1f - sx else sx
-            val normY = sy
-            floatArrayOf(normX, normY, sw, sh)
-        }
-    }
-
-    val halfW = w * 0.5f
-    val halfH = h * 0.5f
-    return RectF(
-        (cx - halfW).coerceIn(0f, 1f),
-        (cy - halfH).coerceIn(0f, 1f),
-        (cx + halfW).coerceIn(0f, 1f),
-        (cy + halfH).coerceIn(0f, 1f)
-    )
-}
-
-private fun buildImageCaptureUseCase(targetSize: Size?): ImageCapture {
+private fun buildImageCaptureUseCase(targetSize: Size?, isHighResolution: Boolean): ImageCapture {
     val selectorBuilder = ResolutionSelector.Builder()
         .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
 
@@ -1217,15 +1185,30 @@ private fun buildImageCaptureUseCase(targetSize: Size?): ImageCapture {
                 ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
             )
         )
+        if (isHighResolution) {
+            selectorBuilder.setAllowedResolutionMode(
+                ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE
+            )
+        }
     }
 
     return ImageCapture.Builder()
-        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+        .setCaptureMode(
+            if (isHighResolution) {
+                ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+            } else {
+                ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+            }
+        )
         .setResolutionSelector(selectorBuilder.build())
         .build()
 }
 
-private fun buildVideoCaptureUseCase(quality: Quality): VideoCapture<Recorder> {
+private fun buildVideoCaptureUseCase(
+    quality: Quality,
+    frameRate: Int?,
+    stabilization: Boolean
+): VideoCapture<Recorder> {
     val qualitySelector = QualitySelector.from(
         quality,
         FallbackStrategy.higherQualityOrLowerThan(quality)
@@ -1233,12 +1216,17 @@ private fun buildVideoCaptureUseCase(quality: Quality): VideoCapture<Recorder> {
     val recorder = Recorder.Builder()
         .setQualitySelector(qualitySelector)
         .build()
-    return VideoCapture.Builder(recorder)
+    val builder = VideoCapture.Builder(recorder)
         .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
-        .build()
+    if (frameRate != null) {
+        builder.setTargetFrameRate(Range(frameRate, frameRate))
+    }
+    if (stabilization) {
+        builder.setVideoStabilizationEnabled(true)
+    }
+    return builder.build()
 }
 
-@OptIn(ExperimentalCamera2Interop::class)
 private fun configureCameraZoomAndExposure(
     camera: Camera,
     viewModel: MirrorViewModel,
@@ -1271,92 +1259,33 @@ private fun configureCameraZoomAndExposure(
     }
 
     triggerCenterAutoExposure(camera)
-
-    runCatching {
-        val camera2Info = Camera2CameraInfo.from(camera.cameraInfo)
-        val fpsRanges = camera2Info.getCameraCharacteristic(
-            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
-        )
-        val bestLowLightRange = selectBestAdaptiveFpsRange(fpsRanges)
-        if (bestLowLightRange != null) {
-            val options = CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    bestLowLightRange
-                )
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON
-                )
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                )
-                .setCaptureRequestOption(
-                    CaptureRequest.CONTROL_AWB_MODE,
-                    CaptureRequest.CONTROL_AWB_MODE_AUTO
-                )
-                .build()
-            Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
-        }
-    }
 }
 
 private fun triggerCenterAutoExposure(camera: Camera) {
+    meterAtNormalizedPoint(
+        camera = camera,
+        x = 0.5f,
+        y = 0.5f,
+        flags = FocusMeteringAction.FLAG_AE or
+            FocusMeteringAction.FLAG_AF or
+            FocusMeteringAction.FLAG_AWB
+    )
+}
+
+private fun meterAtNormalizedPoint(
+    camera: Camera,
+    x: Float,
+    y: Float,
+    flags: Int = FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AF
+) {
     runCatching {
         val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
-        val centerPoint = factory.createPoint(0.5f, 0.5f)
-        val action = FocusMeteringAction.Builder(
-            centerPoint,
-            FocusMeteringAction.FLAG_AE or
-                FocusMeteringAction.FLAG_AF or
-                FocusMeteringAction.FLAG_AWB
-        )
+        val point = factory.createPoint(x.coerceIn(0.1f, 0.9f), y.coerceIn(0.1f, 0.9f))
+        val action = FocusMeteringAction.Builder(point, flags)
             .setAutoCancelDuration(3, TimeUnit.SECONDS)
             .build()
         camera.cameraControl.startFocusAndMetering(action)
     }
-}
-
-private fun selectBestAdaptiveFpsRange(ranges: Array<Range<Int>>?): Range<Int>? {
-    if (ranges.isNullOrEmpty()) return null
-    val candidates30 = ranges.filter { it.upper == 30 }
-    if (candidates30.isNotEmpty()) {
-        return candidates30.minByOrNull { it.lower }
-    }
-    val candidatesAtLeast24 = ranges.filter { it.upper >= 24 }
-    if (candidatesAtLeast24.isNotEmpty()) {
-        return candidatesAtLeast24.minWithOrNull(compareBy<Range<Int>> { it.lower }.thenBy { it.upper })
-    }
-    return ranges.minByOrNull { it.lower }
-}
-
-private fun selectDefaultBinnedPhotoSize(photoSizes: List<Size>): Size? {
-    if (photoSizes.isEmpty()) return null
-    val preferredFourByThree = photoSizes.firstOrNull { size ->
-        val area = size.width.toLong() * size.height.toLong()
-        val ratio = size.width.toDouble() / size.height.toDouble()
-        val isFourByThree = abs(ratio - (4.0 / 3.0)) < 0.06 ||
-            abs(ratio - (3.0 / 4.0)) < 0.06
-        isFourByThree && area <= 13_000_000L
-    }
-    val preferredBinned = photoSizes.firstOrNull { size ->
-        val area = size.width.toLong() * size.height.toLong()
-        area <= 13_000_000L
-    }
-    return preferredFourByThree ?: preferredBinned ?: photoSizes.first()
-}
-
-@OptIn(ExperimentalCamera2Interop::class)
-private fun querySupportedJpegSizes(cameraInfo: androidx.camera.core.CameraInfo): List<Size> {
-    return runCatching {
-        val characteristics = Camera2CameraInfo.from(cameraInfo)
-            .getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        characteristics
-            ?.getOutputSizes(ImageFormat.JPEG)
-            ?.sortedByDescending { it.width.toLong() * it.height.toLong() }
-            .orEmpty()
-    }.getOrDefault(emptyList())
 }
 
 private suspend fun getCameraProvider(context: Context): ProcessCameraProvider {
