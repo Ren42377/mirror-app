@@ -1116,7 +1116,7 @@ private data class RecordingSetup(
 private const val FACE_ZOOM_STEP_MS = 33L
 private const val FACE_METER_INTERVAL_MS = 2500L
 private const val FACE_METER_MOVE_THRESHOLD = 0.1f
-private const val MIN_FACE_SCORE = 50
+private const val MIN_FACE_SCORE = 25
 
 private fun configureFaceZoomTracker(tracker: FaceZoomTracker, capabilities: CameraCapabilities) {
     val activeArray = capabilities.activeArray

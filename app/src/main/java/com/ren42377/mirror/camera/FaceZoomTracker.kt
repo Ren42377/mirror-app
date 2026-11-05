@@ -197,16 +197,16 @@ class FaceZoomTracker {
 
     companion object {
         /** Share of the visible short side that the face should fill. */
-        const val TARGET_FACE_FRACTION = 0.42f
-        const val MAX_FACE_ZOOM = 3f
+        const val TARGET_FACE_FRACTION = 0.72f
+        const val MAX_FACE_ZOOM = 5f
 
         private const val NO_FACE = Long.MIN_VALUE
-        private const val FACE_LOST_TIMEOUT_MS = 900L
+        private const val FACE_LOST_TIMEOUT_MS = 1500L
         private const val ZOOM_DEAD_BAND = 0.07f
         private const val PAN_DEAD_BAND = 0.03f
-        private const val ZOOM_IN_TAU = 0.30f
-        private const val ZOOM_OUT_TAU = 0.50f
-        private const val PAN_TAU = 0.16f
+        private const val ZOOM_IN_TAU = 0.12f
+        private const val ZOOM_OUT_TAU = 0.30f
+        private const val PAN_TAU = 0.08f
         private const val DEFAULT_STEP_SECONDS = 0.033f
 
         /** Approximate face edge length from a face rectangle. */
