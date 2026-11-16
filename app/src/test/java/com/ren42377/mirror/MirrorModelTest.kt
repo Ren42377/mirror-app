@@ -6,6 +6,7 @@ import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
 import com.ren42377.mirror.ui.MirrorUiState
+import com.ren42377.mirror.ui.formatExposureEvLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -75,6 +76,83 @@ class MirrorModelTest {
 
         val enabledState = MirrorUiState(minExposureIndex = -12, maxExposureIndex = 12)
         assertTrue(enabledState.hasExposureControl)
+    }
+
+    @Test
+    fun formatExposureEvLabelFormatsStepsAndFallsBackWithoutStep() {
+        val oneThirdEv = 1f / 3f
+        assertEquals("0.0 EV", formatExposureEvLabel(0, oneThirdEv))
+        assertEquals("+0.3 EV", formatExposureEvLabel(1, oneThirdEv))
+        assertEquals("+0.7 EV", formatExposureEvLabel(2, oneThirdEv))
+        assertEquals("+1.0 EV", formatExposureEvLabel(3, oneThirdEv))
+        assertEquals("-1.0 EV", formatExposureEvLabel(-3, oneThirdEv))
+        assertEquals("-2.0 EV", formatExposureEvLabel(-6, oneThirdEv))
+
+        assertEquals("+0.5 EV", formatExposureEvLabel(1, 0.5f))
+        assertEquals("-1.5 EV", formatExposureEvLabel(-3, 0.5f))
+
+        // Avoids "-0.0 EV" when small negative product rounds to zero
+        assertEquals("0.0 EV", formatExposureEvLabel(-1, 0.01f))
+
+        // Fallback when step EV is unavailable or invalid
+        assertEquals("0 EV", formatExposureEvLabel(0, 0f))
+        assertEquals("+3 EV", formatExposureEvLabel(3, 0f))
+        assertEquals("-2 EV", formatExposureEvLabel(-2, Float.NaN))
+    }
+
+    @Test
+    fun exposureCanBeToggledAndAdjustedDuringActiveVideoRecording() {
+        val recordingState = MirrorUiState(isRecording = true)
+            .withExposureRange(min = -12, max = 12, current = 2, stepEv = 1f / 3f)
+
+        assertTrue(recordingState.hasExposureControl)
+        assertEquals(2, recordingState.exposureIndex)
+        assertEquals(1f / 3f, recordingState.exposureStepEv, 0.0001f)
+
+        val opened = recordingState.withToggledExposureSlider()
+        assertTrue(opened.isExposureSliderVisible)
+
+        val brightened = opened.withExposureIndex(8)
+        assertEquals(8, brightened.exposureIndex)
+
+        val clampedHigh = brightened.withExposureIndex(99)
+        assertEquals(12, clampedHigh.exposureIndex)
+
+        val clampedLow = clampedHigh.withExposureIndex(-99)
+        assertEquals(-12, clampedLow.exposureIndex)
+
+        val reset = clampedLow.withExposureIndex(0)
+        assertEquals(0, reset.exposureIndex)
+
+        val closed = reset.withToggledExposureSlider()
+        assertFalse(closed.isExposureSliderVisible)
+    }
+
+    @Test
+    fun updatingExposureRangePreservesOrDisablesControlSafely() {
+        val visible = MirrorUiState(
+            isRecording = true,
+            minExposureIndex = -12,
+            maxExposureIndex = 12,
+            exposureIndex = 10,
+            exposureStepEv = 1f / 3f,
+            isExposureSliderVisible = true
+        )
+
+        val narrowed = visible.withExposureRange(min = -6, max = 6, current = visible.exposureIndex)
+        assertEquals(6, narrowed.exposureIndex)
+        assertEquals(1f / 3f, narrowed.exposureStepEv, 0.0001f)
+        assertTrue(narrowed.isExposureSliderVisible)
+
+        val unsupported = narrowed.withExposureRange(min = 0, max = 0, current = 4, stepEv = 0f)
+        assertFalse(unsupported.hasExposureControl)
+        assertEquals(0, unsupported.exposureIndex)
+        assertEquals(0f, unsupported.exposureStepEv, 0.0001f)
+        assertFalse(unsupported.isExposureSliderVisible)
+
+        // Toggling or adjusting when unsupported is a no-op
+        assertEquals(unsupported, unsupported.withToggledExposureSlider())
+        assertEquals(unsupported, unsupported.withExposureIndex(3))
     }
 
     @Test

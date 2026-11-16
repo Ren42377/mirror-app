@@ -21,10 +21,12 @@ class CameraOptionsController {
     private var camera: Camera? = null
 
     var fpsRange: FpsRange? = null
+    var isVideoMode: Boolean = false
     var opticalStabilizationSupported: Boolean = false
     var opticalStabilization: Boolean = false
     var faceDetectMode: Int = CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF
     var cropRegion: Rect? = null
+    var exposureCompensationIndex: Int? = null
 
     fun attach(camera: Camera) {
         this.camera = camera
@@ -46,7 +48,11 @@ class CameraOptionsController {
             )
             builder.setCaptureRequestOption(
                 CaptureRequest.CONTROL_AF_MODE,
-                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                if (isVideoMode) {
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                } else {
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                }
             )
             builder.setCaptureRequestOption(
                 CaptureRequest.CONTROL_AWB_MODE,
@@ -74,6 +80,13 @@ class CameraOptionsController {
 
         cropRegion?.let { region ->
             builder.setCaptureRequestOption(CaptureRequest.SCALER_CROP_REGION, region)
+        }
+
+        exposureCompensationIndex?.let { index ->
+            builder.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                index
+            )
         }
 
         runCatching {

@@ -79,6 +79,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -164,6 +165,7 @@ import com.ren42377.mirror.data.RecordingCacheManager
 import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.FaceZoomSample
 import com.ren42377.mirror.ui.MirrorViewModel
+import com.ren42377.mirror.ui.formatExposureEvLabel
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -283,6 +285,20 @@ fun CameraScreen(
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var activeRecording by remember { mutableStateOf<Recording?>(null) }
     var rebindTrigger by remember { mutableIntStateOf(0) }
+    var cameraBindGeneration by remember { mutableIntStateOf(0) }
+    var videoRecordingActiveGeneration by remember { mutableIntStateOf(0) }
+    var isStartingRecording by remember { mutableStateOf(false) }
+
+    var isDraggingExposure by remember { mutableStateOf(false) }
+    var exposureSliderValue by remember { mutableFloatStateOf(uiState.exposureIndex.toFloat()) }
+    LaunchedEffect(uiState.exposureIndex, uiState.isExposureSliderVisible, uiState.lensFacing) {
+        if (!uiState.isExposureSliderVisible) {
+            isDraggingExposure = false
+        }
+        if (!isDraggingExposure) {
+            exposureSliderValue = uiState.exposureIndex.toFloat()
+        }
+    }
 
     var currentZoomRatio by remember { mutableFloatStateOf(1f) }
     var minZoomRatio by remember { mutableFloatStateOf(1f) }
@@ -592,17 +608,27 @@ fun CameraScreen(
         }
     }
 
-    LaunchedEffect(activeCamera, uiState.exposureIndex) {
+    LaunchedEffect(
+        activeCamera,
+        cameraBindGeneration,
+        videoRecordingActiveGeneration,
+        uiState.exposureIndex
+    ) {
         val camera = activeCamera ?: return@LaunchedEffect
-        val exposureState = camera.cameraInfo.exposureState
-        if (exposureState.isExposureCompensationSupported) {
-            val range = exposureState.exposureCompensationRange
-            val clamped = uiState.exposureIndex.coerceIn(range.lower, range.upper)
-            camera.cameraControl.setExposureCompensationIndex(clamped)
-        }
+        applyExposureCompensationWithRetry(
+            context = context,
+            camera = camera,
+            optionsController = optionsController,
+            targetExposureIndex = uiState.exposureIndex
+        )
     }
 
-    LaunchedEffect(activeCamera, uiState.isRingLightEnabled, uiState.lensFacing) {
+    LaunchedEffect(
+        activeCamera,
+        cameraBindGeneration,
+        uiState.isRingLightEnabled,
+        uiState.lensFacing
+    ) {
         val camera = activeCamera ?: return@LaunchedEffect
         if (camera.cameraInfo.hasFlashUnit()) {
             val enableTorch = uiState.isRingLightEnabled &&
@@ -611,7 +637,7 @@ fun CameraScreen(
         }
     }
 
-    LaunchedEffect(activeCamera, uiState.effectiveOpticalStabilization) {
+    LaunchedEffect(activeCamera, cameraBindGeneration, uiState.effectiveOpticalStabilization) {
         if (activeCamera == null) return@LaunchedEffect
         optionsController.opticalStabilization = uiState.effectiveOpticalStabilization
         optionsController.apply()
@@ -624,7 +650,7 @@ fun CameraScreen(
         uiState.settings.videoQuality,
         rebindTrigger
     ) {
-        if (activeRecording != null) return@LaunchedEffect
+        if (activeRecording != null || isStartingRecording) return@LaunchedEffect
 
         val cameraProvider = getCameraProvider(context)
         val hasFront = runCatching {
@@ -665,6 +691,7 @@ fun CameraScreen(
         val isHighResolutionTarget = targetPhotoSize != null &&
             capabilities.highResolutionPhotoSizes.contains(targetPhotoSize)
 
+        optionsController.isVideoMode = false
         optionsController.fpsRange = FrameRatePlanner.selectIdleRange(capabilities.aeFpsRanges)
         optionsController.opticalStabilizationSupported = capabilities.isOpticalStabilizationSupported
         optionsController.opticalStabilization = viewModel.uiState.value.effectiveOpticalStabilization
@@ -681,11 +708,13 @@ fun CameraScreen(
                 configuredImageCapture
             )
             activeCamera = camera
+            cameraBindGeneration += 1
             imageCapture = configuredImageCapture
             val appliedZoom = configureCameraZoomAndExposure(
                 camera = camera,
                 viewModel = viewModel,
-                targetExposureIndex = uiState.exposureIndex
+                optionsController = optionsController,
+                targetExposureIndex = viewModel.uiState.value.exposureIndex
             )
             currentZoomRatio = appliedZoom.current
             minZoomRatio = appliedZoom.min
@@ -712,16 +741,19 @@ fun CameraScreen(
                     fallbackImageCapture
                 )
                 activeCamera = camera
+                cameraBindGeneration += 1
                 imageCapture = fallbackImageCapture
                 val appliedZoom = configureCameraZoomAndExposure(
                     camera = camera,
                     viewModel = viewModel,
-                    targetExposureIndex = uiState.exposureIndex
+                    optionsController = optionsController,
+                    targetExposureIndex = viewModel.uiState.value.exposureIndex
                 )
                 currentZoomRatio = appliedZoom.current
                 minZoomRatio = appliedZoom.min
                 maxZoomRatio = appliedZoom.max
                 isZoomDialExpanded = false
+                optionsController.isVideoMode = false
                 optionsController.attach(camera)
                 if (targetPhotoSize != null) {
                     viewModel.markPhotoSizeUnsupported(resolvedLensFacing, targetPhotoSize)
@@ -834,7 +866,7 @@ fun CameraScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
+                .padding(horizontal = 12.dp, vertical = 12.dp)
                 .align(Alignment.TopCenter)
         ) {
             Row(
@@ -859,7 +891,7 @@ fun CameraScreen(
                         tonalElevation = 4.dp
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
@@ -884,10 +916,12 @@ fun CameraScreen(
                 } else {
                     Surface(
                         onClick = {
-                            if (!uiState.isCapturingPhoto) {
+                            if (!uiState.isCapturingPhoto && !isStartingRecording) {
                                 viewModel.toggleFlip()
                             }
                         },
+                        enabled = !uiState.isCapturingPhoto && !isStartingRecording,
+                        modifier = Modifier.weight(1f, fill = false),
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
                         tonalElevation = 4.dp,
@@ -897,7 +931,7 @@ fun CameraScreen(
                         )
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -913,13 +947,14 @@ fun CameraScreen(
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
-                                softWrap = false
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
 
                 Surface(
                     shape = CircleShape,
@@ -931,19 +966,21 @@ fun CameraScreen(
                     )
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TopBarAspectRatioButton(
-                            label = uiState.aspectRatio.label,
-                            active = uiState.isAspectRatioBarVisible,
-                            enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
-                            onClick = {
-                                isZoomDialExpanded = false
-                                viewModel.toggleAspectRatioBar()
-                            }
-                        )
+                        if (!uiState.isRecording) {
+                            TopBarAspectRatioButton(
+                                label = uiState.aspectRatio.label,
+                                active = uiState.isAspectRatioBarVisible,
+                                enabled = !isStartingRecording && !uiState.isCapturingPhoto,
+                                onClick = {
+                                    isZoomDialExpanded = false
+                                    viewModel.toggleAspectRatioBar()
+                                }
+                            )
+                        }
 
                         TopBarToggleIcon(
                             icon = Icons.Default.Face,
@@ -971,16 +1008,18 @@ fun CameraScreen(
                             )
                         }
 
-                        TopBarToggleIcon(
-                            icon = Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            active = uiState.isSettingsOpen,
-                            enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
-                            onClick = {
-                                isZoomDialExpanded = false
-                                viewModel.openSettingsSheet()
-                            }
-                        )
+                        if (!uiState.isRecording) {
+                            TopBarToggleIcon(
+                                icon = Icons.Default.Settings,
+                                contentDescription = "Settings",
+                                active = uiState.isSettingsOpen,
+                                enabled = !isStartingRecording && !uiState.isCapturingPhoto,
+                                onClick = {
+                                    isZoomDialExpanded = false
+                                    viewModel.openSettingsSheet()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1006,6 +1045,14 @@ fun CameraScreen(
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically()
             ) {
+                val safeMin = uiState.minExposureIndex
+                val safeMax = uiState.maxExposureIndex.coerceAtLeast(safeMin + 1)
+                val clampedDisplayIndex = if (isDraggingExposure) {
+                    exposureSliderValue.roundToInt().coerceIn(safeMin, safeMax)
+                } else {
+                    uiState.exposureIndex.coerceIn(safeMin, safeMax)
+                }
+
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
@@ -1021,7 +1068,7 @@ fun CameraScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
@@ -1030,23 +1077,37 @@ fun CameraScreen(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Slider(
-                            value = uiState.exposureIndex.toFloat(),
+                            value = exposureSliderValue.coerceIn(safeMin.toFloat(), safeMax.toFloat()),
                             onValueChange = { value ->
-                                viewModel.setExposureIndex(value.roundToInt())
+                                isDraggingExposure = true
+                                exposureSliderValue = value
+                                val nextIndex = value.roundToInt().coerceIn(safeMin, safeMax)
+                                if (nextIndex != uiState.exposureIndex) {
+                                    viewModel.setExposureIndex(nextIndex)
+                                }
                             },
-                            valueRange = uiState.minExposureIndex.toFloat()..uiState.maxExposureIndex.toFloat(),
+                            onValueChangeFinished = {
+                                val snapped = exposureSliderValue.roundToInt().coerceIn(safeMin, safeMax)
+                                viewModel.setExposureIndex(snapped)
+                                isDraggingExposure = false
+                                exposureSliderValue = snapped.toFloat()
+                            },
+                            valueRange = safeMin.toFloat()..safeMax.toFloat(),
                             modifier = Modifier.weight(1f)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val sign = if (uiState.exposureIndex > 0) "+" else ""
+                        Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.defaultMinSize(minWidth = 60.dp)
                         ) {
                             Text(
-                                text = "${sign}${uiState.exposureIndex} EV",
+                                text = formatExposureEvLabel(
+                                    index = clampedDisplayIndex,
+                                    stepEv = uiState.exposureStepEv
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -1059,11 +1120,19 @@ fun CameraScreen(
                         Spacer(modifier = Modifier.width(4.dp))
                         TextButton(
                             onClick = {
+                                isDraggingExposure = false
+                                exposureSliderValue = 0f
                                 viewModel.setExposureIndex(0)
                                 activeCamera?.let { cam ->
+                                    if (uiState.hasExposureControl) {
+                                        optionsController.exposureCompensationIndex = 0
+                                        optionsController.apply()
+                                    }
                                     triggerCenterAutoExposure(cam)
                                 }
-                            }
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp)
                         ) {
                             Text(
                                 text = "Auto",
@@ -1195,7 +1264,7 @@ fun CameraScreen(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             FilledTonalIconButton(
                                 onClick = { viewModel.toggleFlip() },
-                                enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
+                                enabled = !uiState.isRecording && !isStartingRecording && !uiState.isCapturingPhoto,
                                 modifier = Modifier.size(48.dp),
                                 colors = IconButtonDefaults.filledTonalIconButtonColors(
                                     containerColor = flipContainer,
@@ -1232,7 +1301,7 @@ fun CameraScreen(
                                         lensSwitchRotationCount += 1
                                         viewModel.switchCamera()
                                     },
-                                    enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
+                                    enabled = !uiState.isRecording && !isStartingRecording && !uiState.isCapturingPhoto,
                                     modifier = Modifier.size(48.dp),
                                     colors = IconButtonDefaults.filledTonalIconButtonColors(
                                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -1275,7 +1344,7 @@ fun CameraScreen(
                             .scale(shutterScale)
                             .border(
                                 width = 3.dp,
-                                color = if (!uiState.isRecording) {
+                                color = if (!uiState.isRecording && !isStartingRecording) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     MaterialTheme.colorScheme.outlineVariant
@@ -1287,7 +1356,9 @@ fun CameraScreen(
                         FilledIconButton(
                             onClick = {
                                 val capture = imageCapture ?: return@FilledIconButton
-                                if (uiState.isRecording || uiState.isCapturingPhoto) return@FilledIconButton
+                                if (uiState.isRecording || isStartingRecording || uiState.isCapturingPhoto) {
+                                    return@FilledIconButton
+                                }
                                 val mirrorOutput = uiState.isMirroredOnScreen
                                 val captureZoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
                                 val captureCenterX = if (uiState.isFlipped) 1f - facePanNormX else facePanNormX
@@ -1330,7 +1401,7 @@ fun CameraScreen(
                                     }
                                 )
                             },
-                            enabled = !uiState.isRecording && !uiState.isCapturingPhoto,
+                            enabled = !uiState.isRecording && !isStartingRecording && !uiState.isCapturingPhoto,
                             modifier = Modifier.fillMaxSize(),
                             shape = CircleShape,
                             colors = IconButtonDefaults.filledIconButtonColors(
@@ -1379,121 +1450,133 @@ fun CameraScreen(
                                         activeRecording?.stop()
                                         activeRecording = null
                                     } else {
+                                        if (isStartingRecording) return@FilledIconButton
+                                        isStartingRecording = true
                                         coroutineScope.launch {
-                                            val cameraProvider = getCameraProvider(context)
-                                            val cameraSelector = CameraSelector.Builder()
-                                                .requireLensFacing(uiState.lensFacing)
-                                                .build()
-                                            val capabilities = cameraCapabilities
-                                            val requestedFrameRate = uiState.effectiveFrameRate
-                                            val requestedStabilization = uiState.effectiveVideoStabilization
-                                            val recordingAspectOption = uiState.aspectRatio
-                                            val preferredVideoAspect = if (
-                                                recordingAspectOption == AspectRatioOption.RATIO_16_9 ||
-                                                recordingAspectOption == AspectRatioOption.FULLSCREEN
-                                            ) {
-                                                AspectRatio.RATIO_16_9
-                                            } else {
-                                                AspectRatio.RATIO_4_3
-                                            }
-                                            val preservedZoomRatio = activeCamera?.cameraInfo?.zoomState?.value?.zoomRatio
-                                            val attempts = buildList {
-                                                add(
-                                                    RecordingSetup(
-                                                        aspectRatio = preferredVideoAspect,
-                                                        frameRate = requestedFrameRate,
-                                                        stabilization = requestedStabilization
-                                                    )
-                                                )
-                                                add(
-                                                    RecordingSetup(
-                                                        aspectRatio = preferredVideoAspect,
-                                                        frameRate = null,
-                                                        stabilization = false
-                                                    )
-                                                )
-                                                if (preferredVideoAspect != AspectRatio.RATIO_16_9) {
+                                            try {
+                                                val initialState = viewModel.uiState.value
+                                                val cameraProvider = getCameraProvider(context)
+                                                val cameraSelector = CameraSelector.Builder()
+                                                    .requireLensFacing(initialState.lensFacing)
+                                                    .build()
+                                                val capabilities = cameraCapabilities
+                                                val requestedFrameRate = initialState.effectiveFrameRate
+                                                val requestedStabilization = initialState.effectiveVideoStabilization
+                                                val recordingAspectOption = initialState.aspectRatio
+                                                val preferredVideoQuality = initialState.effectiveVideoQuality.cameraQuality
+                                                val mirrorOutput = initialState.isMirroredOnScreen
+                                                val preferredVideoAspect = if (
+                                                    recordingAspectOption == AspectRatioOption.RATIO_16_9 ||
+                                                    recordingAspectOption == AspectRatioOption.FULLSCREEN
+                                                ) {
+                                                    AspectRatio.RATIO_16_9
+                                                } else {
+                                                    AspectRatio.RATIO_4_3
+                                                }
+                                                val preservedZoomRatio = activeCamera?.cameraInfo?.zoomState?.value?.zoomRatio
+                                                val attempts = buildList {
                                                     add(
                                                         RecordingSetup(
-                                                            aspectRatio = AspectRatio.RATIO_16_9,
+                                                            aspectRatio = preferredVideoAspect,
+                                                            frameRate = requestedFrameRate,
+                                                            stabilization = requestedStabilization
+                                                        )
+                                                    )
+                                                    add(
+                                                        RecordingSetup(
+                                                            aspectRatio = preferredVideoAspect,
                                                             frameRate = null,
                                                             stabilization = false
                                                         )
                                                     )
+                                                    if (preferredVideoAspect != AspectRatio.RATIO_16_9) {
+                                                        add(
+                                                            RecordingSetup(
+                                                                aspectRatio = AspectRatio.RATIO_16_9,
+                                                                frameRate = null,
+                                                                stabilization = false
+                                                            )
+                                                        )
+                                                    }
                                                 }
-                                            }
 
-                                            var recordingCamera: Camera? = null
-                                            var recordingUseCase: VideoCapture<Recorder>? = null
-                                            for (setup in attempts) {
-                                                val previewUseCase = buildPreviewUseCase(
-                                                    previewView = previewView,
-                                                    faceZoomTracker = faceZoomTracker,
-                                                    aspectRatio = setup.aspectRatio
-                                                )
-                                                val videoUseCase = buildVideoCaptureUseCase(
-                                                    quality = uiState.effectiveVideoQuality.cameraQuality,
-                                                    aspectRatio = setup.aspectRatio,
-                                                    frameRate = setup.frameRate,
-                                                    stabilization = setup.stabilization
-                                                )
-                                                try {
-                                                    cameraProvider.unbindAll()
-                                                    val camera = cameraProvider.bindToLifecycle(
-                                                        lifecycleOwner,
-                                                        cameraSelector,
-                                                        previewUseCase,
-                                                        videoUseCase
+                                                var recordingCamera: Camera? = null
+                                                var recordingUseCase: VideoCapture<Recorder>? = null
+                                                for (setup in attempts) {
+                                                    val previewUseCase = buildPreviewUseCase(
+                                                        previewView = previewView,
+                                                        faceZoomTracker = faceZoomTracker,
+                                                        aspectRatio = setup.aspectRatio
                                                     )
-                                                    recordingCamera = camera
-                                                    recordingUseCase = videoUseCase
-                                                    activeCamera = camera
-                                                    val appliedZoom = configureCameraZoomAndExposure(
-                                                        camera = camera,
-                                                        viewModel = viewModel,
-                                                        targetExposureIndex = uiState.exposureIndex,
-                                                        preserveZoomRatio = preservedZoomRatio
+                                                    val videoUseCase = buildVideoCaptureUseCase(
+                                                        quality = preferredVideoQuality,
+                                                        aspectRatio = setup.aspectRatio,
+                                                        frameRate = setup.frameRate,
+                                                        stabilization = setup.stabilization
                                                     )
-                                                    currentZoomRatio = appliedZoom.current
-                                                    minZoomRatio = appliedZoom.min
-                                                    maxZoomRatio = appliedZoom.max
-                                                    optionsController.fpsRange = setup.frameRate
-                                                        ?.let { FrameRatePlanner.selectAeRange(capabilities.aeFpsRanges, it) }
-                                                        ?: FrameRatePlanner.selectIdleRange(capabilities.aeFpsRanges)
-                                                    optionsController.attach(camera)
-                                                    break
-                                                } catch (_: Exception) {
-                                                    recordingCamera = null
-                                                    recordingUseCase = null
+                                                    try {
+                                                        cameraProvider.unbindAll()
+                                                        val camera = cameraProvider.bindToLifecycle(
+                                                            lifecycleOwner,
+                                                            cameraSelector,
+                                                            previewUseCase,
+                                                            videoUseCase
+                                                        )
+                                                        recordingCamera = camera
+                                                        recordingUseCase = videoUseCase
+                                                        activeCamera = camera
+                                                        cameraBindGeneration += 1
+                                                        val appliedZoom = configureCameraZoomAndExposure(
+                                                            camera = camera,
+                                                            viewModel = viewModel,
+                                                            optionsController = optionsController,
+                                                            targetExposureIndex = viewModel.uiState.value.exposureIndex,
+                                                            preserveZoomRatio = preservedZoomRatio
+                                                        )
+                                                        currentZoomRatio = appliedZoom.current
+                                                        minZoomRatio = appliedZoom.min
+                                                        maxZoomRatio = appliedZoom.max
+                                                        optionsController.isVideoMode = true
+                                                        optionsController.fpsRange = setup.frameRate
+                                                            ?.let { FrameRatePlanner.selectAeRange(capabilities.aeFpsRanges, it) }
+                                                            ?: FrameRatePlanner.selectIdleRange(capabilities.aeFpsRanges)
+                                                        optionsController.attach(camera)
+                                                        break
+                                                    } catch (_: Exception) {
+                                                        recordingCamera = null
+                                                        recordingUseCase = null
+                                                    }
                                                 }
-                                            }
 
-                                            val boundVideoCapture = recordingUseCase
-                                            if (recordingCamera == null || boundVideoCapture == null) {
-                                                activeRecording = null
-                                                viewModel.onRecordingStopped()
-                                                rebindTrigger += 1
-                                                return@launch
-                                            }
+                                                val boundVideoCapture = recordingUseCase
+                                                if (recordingCamera == null || boundVideoCapture == null) {
+                                                    isStartingRecording = false
+                                                    activeRecording = null
+                                                    viewModel.onRecordingStopped()
+                                                    rebindTrigger += 1
+                                                    return@launch
+                                                }
 
-                                            try {
                                                 startVideoRecording(
                                                     context = context,
                                                     videoCapture = boundVideoCapture,
-                                                    mirrorOutput = uiState.isMirroredOnScreen,
+                                                    mirrorOutput = mirrorOutput,
                                                     aspectRatio = recordingAspectOption,
                                                     viewModel = viewModel,
                                                     onNavigateToVideoPreview = onNavigateToVideoPreview,
                                                     onRecordingStarted = {
+                                                        isStartingRecording = false
+                                                        videoRecordingActiveGeneration += 1
                                                         recordingStartElapsedMs = SystemClock.elapsedRealtime()
-                                                        val isFront = uiState.lensFacing == CameraSelector.LENS_FACING_FRONT
-                                                        val initialX = if (uiState.isFaceAutoZoomEnabled) {
+                                                        val startedState = viewModel.uiState.value
+                                                        val isFront = startedState.lensFacing == CameraSelector.LENS_FACING_FRONT
+                                                        val initialX = if (startedState.isFaceAutoZoomEnabled) {
                                                             if (isFront) 1f - facePanNormX else facePanNormX
                                                         } else {
                                                             0.5f
                                                         }
-                                                        val initialY = if (uiState.isFaceAutoZoomEnabled) facePanNormY else 0.5f
-                                                        val initialZoom = if (uiState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
+                                                        val initialY = if (startedState.isFaceAutoZoomEnabled) facePanNormY else 0.5f
+                                                        val initialZoom = if (startedState.isFaceAutoZoomEnabled) faceZoomFactor else 1f
                                                         synchronized(recordingZoomSamples) {
                                                             recordingZoomSamples.clear()
                                                             recordingZoomSamples.add(
@@ -1515,11 +1598,13 @@ fun CameraScreen(
                                                         activeRecording = recording
                                                     },
                                                     onRecordingFinished = {
+                                                        isStartingRecording = false
                                                         activeRecording = null
                                                         rebindTrigger += 1
                                                     }
                                                 )
                                             } catch (_: Exception) {
+                                                isStartingRecording = false
                                                 activeRecording = null
                                                 viewModel.onRecordingStopped()
                                                 rebindTrigger += 1
@@ -1527,7 +1612,7 @@ fun CameraScreen(
                                         }
                                     }
                                 },
-                                enabled = !uiState.isCapturingPhoto,
+                                enabled = !uiState.isCapturingPhoto && !isStartingRecording,
                                 modifier = Modifier.size(52.dp),
                                 shape = RoundedCornerShape(recordCorner),
                                 colors = IconButtonDefaults.filledIconButtonColors(
@@ -1623,12 +1708,12 @@ private fun TopBarAspectRatioButton(
         shape = CircleShape,
         color = if (enabled) containerColor else Color.Transparent,
         modifier = Modifier
-            .height(40.dp)
-            .defaultMinSize(minWidth = 44.dp)
+            .height(36.dp)
+            .defaultMinSize(minWidth = 38.dp)
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.padding(horizontal = 10.dp)
+            modifier = Modifier.padding(horizontal = 8.dp)
         ) {
             Text(
                 text = label,
@@ -1740,7 +1825,7 @@ private fun TopBarToggleIcon(
     FilledTonalIconButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.size(40.dp),
+        modifier = Modifier.size(36.dp),
         colors = IconButtonDefaults.filledTonalIconButtonColors(
             containerColor = containerColor,
             contentColor = contentColor,
@@ -1751,7 +1836,7 @@ private fun TopBarToggleIcon(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(19.dp)
         )
     }
 }
@@ -2457,6 +2542,7 @@ private fun buildVideoCaptureUseCase(
 private fun configureCameraZoomAndExposure(
     camera: Camera,
     viewModel: MirrorViewModel,
+    optionsController: CameraOptionsController,
     targetExposureIndex: Int,
     preserveZoomRatio: Float? = null
 ): AppliedZoomBounds {
@@ -2477,17 +2563,22 @@ private fun configureCameraZoomAndExposure(
     }
 
     val exposureState = camera.cameraInfo.exposureState
-    if (exposureState.isExposureCompensationSupported) {
-        val range = exposureState.exposureCompensationRange
+    val range = exposureState.exposureCompensationRange
+    if (exposureState.isExposureCompensationSupported && range.lower < range.upper) {
         val appliedIndex = targetExposureIndex.coerceIn(range.lower, range.upper)
+        val stepEv = runCatching { exposureState.exposureCompensationStep.toFloat() }
+            .getOrDefault(0f)
+        optionsController.exposureCompensationIndex = appliedIndex
         viewModel.updateExposureRange(
             min = range.lower,
             max = range.upper,
-            current = appliedIndex
+            current = appliedIndex,
+            stepEv = stepEv
         )
         camera.cameraControl.setExposureCompensationIndex(appliedIndex)
     } else {
-        viewModel.updateExposureRange(min = 0, max = 0, current = 0)
+        optionsController.exposureCompensationIndex = null
+        viewModel.updateExposureRange(min = 0, max = 0, current = 0, stepEv = 0f)
     }
 
     triggerCenterAutoExposure(camera)
@@ -2496,6 +2587,61 @@ private fun configureCameraZoomAndExposure(
         min = minZoom,
         max = maxZoom
     )
+}
+
+private suspend fun applyExposureCompensationWithRetry(
+    context: Context,
+    camera: Camera,
+    optionsController: CameraOptionsController,
+    targetExposureIndex: Int
+) {
+    val exposureState = camera.cameraInfo.exposureState
+    val range = exposureState.exposureCompensationRange
+    if (!exposureState.isExposureCompensationSupported || range.lower >= range.upper) {
+        optionsController.exposureCompensationIndex = null
+        optionsController.apply()
+        return
+    }
+    val clamped = targetExposureIndex.coerceIn(range.lower, range.upper)
+    val maxAttempts = 4
+    for (attempt in 0 until maxAttempts) {
+        optionsController.exposureCompensationIndex = clamped
+        optionsController.apply()
+        if (awaitExposureCompensation(context, camera, clamped)) {
+            return
+        }
+        if (attempt < maxAttempts - 1) {
+            delay(80L * (attempt + 1))
+        }
+    }
+}
+
+private suspend fun awaitExposureCompensation(
+    context: Context,
+    camera: Camera,
+    index: Int
+): Boolean {
+    return suspendCancellableCoroutine { continuation ->
+        val future = try {
+            camera.cameraControl.setExposureCompensationIndex(index)
+        } catch (_: Exception) {
+            if (continuation.isActive) {
+                continuation.resume(false)
+            }
+            return@suspendCancellableCoroutine
+        }
+        future.addListener(
+            {
+                if (!continuation.isActive) return@addListener
+                val applied = runCatching {
+                    future.get()
+                    true
+                }.getOrDefault(false)
+                continuation.resume(applied)
+            },
+            ContextCompat.getMainExecutor(context)
+        )
+    }
 }
 
 private fun triggerCenterAutoExposure(camera: Camera) {

@@ -6,7 +6,9 @@ import com.ren42377.mirror.model.AppSettings
 import com.ren42377.mirror.model.AspectRatioOption
 import com.ren42377.mirror.model.VideoModeCapability
 import com.ren42377.mirror.model.VideoQualityOption
+import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 data class MirrorUiState(
     val lensFacing: Int = CameraSelector.LENS_FACING_FRONT,
@@ -26,6 +28,7 @@ data class MirrorUiState(
     val exposureIndex: Int = 0,
     val minExposureIndex: Int = 0,
     val maxExposureIndex: Int = 0,
+    val exposureStepEv: Float = 0f,
     val isExposureSliderVisible: Boolean = false,
     val isRingLightEnabled: Boolean = false,
     val isFaceAutoZoomEnabled: Boolean = false,
@@ -44,6 +47,41 @@ data class MirrorUiState(
 
     val hasExposureControl: Boolean
         get() = minExposureIndex < maxExposureIndex
+
+    fun withExposureRange(
+        min: Int,
+        max: Int,
+        current: Int,
+        stepEv: Float = exposureStepEv
+    ): MirrorUiState {
+        val safeMin = min.coerceAtMost(max)
+        val safeMax = max.coerceAtLeast(min)
+        val supportsExposure = safeMin < safeMax
+        val validStep = if (stepEv.isFinite() && stepEv > 0f) stepEv else 0f
+        return copy(
+            minExposureIndex = safeMin,
+            maxExposureIndex = safeMax,
+            exposureIndex = if (supportsExposure) current.coerceIn(safeMin, safeMax) else 0,
+            exposureStepEv = if (supportsExposure) validStep else 0f,
+            isExposureSliderVisible = if (supportsExposure) isExposureSliderVisible else false
+        )
+    }
+
+    fun withExposureIndex(index: Int): MirrorUiState {
+        if (!hasExposureControl) return this
+        return copy(
+            exposureIndex = index.coerceIn(minExposureIndex, maxExposureIndex)
+        )
+    }
+
+    fun withToggledExposureSlider(): MirrorUiState {
+        if (!hasExposureControl) return this
+        val nextVisible = !isExposureSliderVisible
+        return copy(
+            isExposureSliderVisible = nextVisible,
+            isAspectRatioBarVisible = if (nextVisible) false else isAspectRatioBarVisible
+        )
+    }
 
     val supportedVideoQualities: List<VideoQualityOption>
         get() = videoCapabilities.map { it.quality }
@@ -104,4 +142,16 @@ data class MirrorUiState(
 
     val effectiveOpticalStabilization: Boolean
         get() = settings.opticalStabilization && isOpticalStabilizationSupported
+}
+
+fun formatExposureEvLabel(index: Int, stepEv: Float): String {
+    if (!stepEv.isFinite() || stepEv <= 0f) {
+        val sign = if (index > 0) "+" else ""
+        return "$sign$index EV"
+    }
+    val rawEv = index * stepEv
+    val roundedTenths = (rawEv * 10f).roundToInt() / 10f
+    val normalized = if (abs(roundedTenths) < 0.05f) 0f else roundedTenths
+    val sign = if (normalized > 0f) "+" else ""
+    return String.format(Locale.US, "%s%.1f EV", sign, normalized)
 }

@@ -73,6 +73,9 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
                     lensFacing = nextLens,
                     isFlipped = false,
                     exposureIndex = 0,
+                    minExposureIndex = 0,
+                    maxExposureIndex = 0,
+                    exposureStepEv = 0f,
                     isExposureSliderVisible = false,
                     isAspectRatioBarVisible = false,
                     isFaceDetected = false
@@ -154,27 +157,20 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun updateExposureRange(min: Int, max: Int, current: Int) {
+    fun updateExposureRange(
+        min: Int,
+        max: Int,
+        current: Int,
+        stepEv: Float = _uiState.value.exposureStepEv
+    ) {
         _uiState.update { state ->
-            val safeMin = min.coerceAtMost(max)
-            val safeMax = max.coerceAtLeast(min)
-            state.copy(
-                minExposureIndex = safeMin,
-                maxExposureIndex = safeMax,
-                exposureIndex = current.coerceIn(safeMin, safeMax)
-            )
+            state.withExposureRange(min = min, max = max, current = current, stepEv = stepEv)
         }
     }
 
     fun setExposureIndex(index: Int) {
         _uiState.update { state ->
-            if (!state.hasExposureControl) {
-                state
-            } else {
-                state.copy(
-                    exposureIndex = index.coerceIn(state.minExposureIndex, state.maxExposureIndex)
-                )
-            }
+            state.withExposureIndex(index)
         }
     }
 
@@ -206,15 +202,7 @@ class MirrorViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleExposureSlider() {
         _uiState.update { state ->
-            if (!state.hasExposureControl) {
-                state
-            } else {
-                val nextVisible = !state.isExposureSliderVisible
-                state.copy(
-                    isExposureSliderVisible = nextVisible,
-                    isAspectRatioBarVisible = if (nextVisible) false else state.isAspectRatioBarVisible
-                )
-            }
+            state.withToggledExposureSlider()
         }
     }
 
